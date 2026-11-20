@@ -1,0 +1,24 @@
+<!--
+  Windows Sandbox config for testing GloriaSetup on a clean machine with software rendering (WARP).
+  Windows Sandbox needs absolute paths, so don't open this file directly: run
+      powershell -ExecutionPolicy Bypass -File sandbox\run.ps1
+  which writes a copy with HOST_DIST replaced by this checkout's dist folder and opens it.
+  Inside the sandbox the folder is Desktop\dist (read-only).
+-->
+<Configuration>
+  <!-- No GPU: Direct2D falls back to WARP, the renderer most VMs and remote sessions get. -->
+  <vGPU>Disable</vGPU>
+  <!-- A clean machine; no network also keeps SmartScreen from looking the unsigned setups up. -->
+  <Networking>Disable</Networking>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>HOST_DIST</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\dist</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>explorer.exe C:\Users\WDAGUtilityAccount\Desktop\dist</Command>
+  </LogonCommand>
+</Configuration>

@@ -1,0 +1,9 @@
+# The GloriaSetup test app. `pack.ps1` overrides `version` and `icon` for the 0.1.0 and 0.2.0 builds.
+id = "GloriaDummy"
+name = "GloriaSetup Dummy"
+version = "0.1.0"
+main_exe = "dummy.exe"
+icon = "icons/dummy-a.ico"
+accent = "#5b8def"
+description = "Test app for GloriaSetup"
+data_folders = ['%APPDATA%\com.gloria.dummy']

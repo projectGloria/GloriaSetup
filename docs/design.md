@@ -213,8 +213,10 @@ and runs `UninstallString` via `cmd /C`, which handles the quoted path.
   `%TEMP%\GloriaSetup-<id>-<rand>.exe`, starts that with `--cleanup "<install>" --wait-pid <pid>` (plus the user's
   choices), and exits.
 - The temp copy waits for the PID, closes running app processes, removes tracked files, shortcuts, the registry key,
-  user data only if chosen, then empty directories, and finally schedules itself with
-  `MoveFileExW(…, MOVEFILE_DELAY_UNTIL_REBOOT)`. Progress and the result are shown by the temp copy, so the user sees
+  user data only if chosen, then empty directories, and finally deletes itself through a hidden
+  `cmd /c ping -n 3 127.0.0.1 >nul & del "<self>"` started just before it exits. (Changed in M1: the planned
+  `MoveFileExW(…, MOVEFILE_DELAY_UNTIL_REBOOT)` writes `PendingFileRenameOperations` under HKLM and needs admin, so it
+  fails for a per-user installer. If the `del` ever misses, the leftover is one small file in `%TEMP%`.) Progress and the result are shown by the temp copy, so the user sees
   one continuous window.
 
 ## 8. Existing installs
