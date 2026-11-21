@@ -43,6 +43,33 @@ pub fn uninstall_values(
     ]
 }
 
+/// HKCU roots of the context-menu entry: right-click on a folder, on a folder's background, on a drive.
+pub const CONTEXT_MENU_ROOTS: [&str; 3] = [
+    r"Software\Classes\Directory\shell",
+    r"Software\Classes\Directory\Background\shell",
+    r"Software\Classes\Drive\shell",
+];
+
+/// Every context-menu key an app may own (under HKCU), whether or not it has the entry now. Removed on uninstall
+/// and on an update whose manifest drops `context_menu`.
+pub fn context_menu_keys(app: &AppManifest) -> Vec<String> {
+    CONTEXT_MENU_ROOTS.iter().map(|r| format!(r"{r}\{}", app.uninstall_key())).collect()
+}
+
+/// Keys (under HKCU) and their values for the context-menu entry, in write order. `""` is the key's default
+/// value. Empty when the manifest has no `context_menu`.
+pub fn context_menu_values(app: &AppManifest, install_dir: &Path) -> Vec<(String, Vec<(&'static str, RegValue)>)> {
+    let Some(label) = &app.context_menu else { return Vec::new() };
+    let dir = install_dir.to_string_lossy().trim_end_matches('\\').to_string();
+    let exe = format!("{dir}\\{}", app.main_exe_rel());
+    let mut out = Vec::new();
+    for key in context_menu_keys(app) {
+        out.push((key.clone(), vec![("", RegValue::Sz(label.clone())), ("Icon", RegValue::Sz(exe.clone()))]));
+        out.push((format!(r"{key}\command"), vec![("", RegValue::Sz(format!("\"{exe}\" \"%V\"")))]));
+    }
+    out
+}
+
 /// Copies of the GloriaLauncher detection helpers (`src-tauri/src/lib.rs`, `mod system_installed`), so the tests
 /// check our values against the launcher's real parsing rules. Keep in sync if the launcher changes.
 pub mod launcher {
@@ -143,6 +170,24 @@ accent = "#3b82f6"
         // The uninstaller is a helper, so the launcher never mistakes it for the app.
         assert!(is_helper_exe(UNINSTALLER_NAME));
         assert_eq!(normalize(strip_version(sz(&v, "DisplayName"))), "gloriadummy");
+    }
+
+    #[test]
+    fn context_menu_entry() {
+        let dir = PathBuf::from(r"C:\Users\you\AppData\Local\Programs\Galaxy\");
+        assert!(context_menu_values(&app(), &dir).is_empty(), "no entry without context_menu");
+        let mut a = app();
+        a.context_menu = Some("Galaxy".into());
+        let v = context_menu_values(&a, &dir);
+        assert_eq!(v.len(), 6);
+        assert_eq!(v[0].0, r"Software\Classes\Directory\shell\projectGloria.GloriaDummy");
+        assert_eq!(v[0].1[0], ("", RegValue::Sz("Galaxy".into())));
+        assert_eq!(v[0].1[1], ("Icon", RegValue::Sz(r"C:\Users\you\AppData\Local\Programs\Galaxy\gloria-dummy.exe".into())));
+        assert_eq!(v[1].0, r"Software\Classes\Directory\shell\projectGloria.GloriaDummy\command");
+        assert_eq!(v[1].1[0], ("", RegValue::Sz(r#""C:\Users\you\AppData\Local\Programs\Galaxy\gloria-dummy.exe" "%V""#.into())));
+        assert_eq!(v[2].0, r"Software\Classes\Directory\Background\shell\projectGloria.GloriaDummy");
+        assert_eq!(v[4].0, r"Software\Classes\Drive\shell\projectGloria.GloriaDummy");
+        assert_eq!(context_menu_keys(&app()).len(), 3, "keys to remove exist without an entry too");
     }
 
     #[test]

@@ -222,6 +222,11 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         for (k, v) in registry::uninstall_values(app, dir, files.iter().map(|f| f.size).sum(), gloria_core::GLORIA_SETUP_VERSION) {
             log!("[dry run] would set HKCU\\{}\\{}\\{k} = {v:?}", registry::UNINSTALL_ROOT, app.uninstall_key());
         }
+        for (key, values) in registry::context_menu_values(app, dir) {
+            for (k, v) in values {
+                log!("[dry run] would set HKCU\\{key}\\{k} = {v:?}");
+            }
+        }
         progress(100.0, "");
         return Ok(());
     }
@@ -394,6 +399,20 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         m.shortcuts = shortcuts;
         if let Err(e) = m.save(dir) {
             log!("{INSTALL_MANIFEST_NAME}: {e}");
+        }
+    }
+
+    // Explorer context menu (also after the commit: logged, never rolled back). An update that drops
+    // `context_menu` removes the old entry.
+    if app.context_menu.is_none() {
+        for key in registry::context_menu_keys(app) {
+            let _ = sys::reg_delete_hkcu(&key);
+        }
+    }
+    for (key, values) in registry::context_menu_values(app, dir) {
+        match sys::reg_write_hkcu(&key, &values) {
+            Ok(()) => log!("context menu HKCU\\{key}"),
+            Err(e) => log!("context menu HKCU\\{key} failed: {e}"),
         }
     }
 
@@ -730,6 +749,13 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
             log!("[dry run] would delete HKCU\\{}\\{key}", registry::UNINSTALL_ROOT);
         } else if let Err(e) = sys::reg_delete(&key) {
             log!("registry: {e}");
+        }
+        for k in registry::context_menu_keys(app) {
+            if u.dry_run {
+                log!("[dry run] would delete HKCU\\{k}");
+            } else if let Err(e) = sys::reg_delete_hkcu(&k) {
+                log!("context menu: {e}");
+            }
         }
     } else {
         log!("registry key points at {:?}, left alone", reg_dir);

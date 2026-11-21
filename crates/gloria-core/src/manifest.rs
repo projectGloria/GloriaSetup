@@ -37,6 +37,10 @@ pub struct AppManifest {
     pub legacy_names: Vec<String>,
     #[serde(default)]
     pub app_user_model_id: Option<String>,
+    /// Label of a per-user Explorer context-menu entry on folders, folder backgrounds and drives, which runs
+    /// `"<main_exe>" "<folder>"`. None = no entry.
+    #[serde(default)]
+    pub context_menu: Option<String>,
 }
 
 fn default_accent() -> String {
@@ -120,6 +124,11 @@ impl AppManifest {
                 return Err(format!("app_user_model_id {a:?}: no spaces, at most 128 characters"));
             }
         }
+        if let Some(l) = &self.context_menu {
+            if l.trim().is_empty() || l != l.trim() || l.len() > 64 || l.chars().any(|c| c.is_control()) {
+                return Err(format!("context_menu {l:?}: one line of 1-64 characters, no leading or trailing spaces"));
+            }
+        }
         Ok(())
     }
 
@@ -168,6 +177,7 @@ impl RuntimeManifest {
                 data_folders: vec![r"%APPDATA%\com.gloria.sample".into(), r"%LOCALAPPDATA%\com.gloria.sample".into()],
                 legacy_names: vec![],
                 app_user_model_id: None,
+                context_menu: None,
             },
             test_build: true,
             packer: String::new(),
@@ -193,6 +203,7 @@ needs_webview2 = true
 data_folders  = ["%APPDATA%\\com.omniconvert.app", "%LOCALAPPDATA%\\com.omniconvert.app"]
 legacy_names  = ["OmniConvert"]
 app_user_model_id = "com.omniconvert.app"
+context_menu  = "Convert with OmniConvert"
 "##;
 
     #[test]
@@ -229,6 +240,9 @@ app_user_model_id = "com.omniconvert.app"
         assert!(bad(&|m| m.main_exe = "bin/uninstall.exe".into()));
         assert!(bad(&|m| m.accent = "orange".into()));
         assert!(bad(&|m| m.data_folders = vec!["%APPDATA%".into()]));
+        assert!(bad(&|m| m.context_menu = Some(String::new())));
+        assert!(bad(&|m| m.context_menu = Some(" Galaxy".into())));
+        assert!(bad(&|m| m.context_menu = Some("two\nlines".into())));
         assert!(!bad(&|m| m.main_exe = "bin/app.exe".into()));
         assert!(RuntimeManifest::sample().app.validate().is_ok());
     }

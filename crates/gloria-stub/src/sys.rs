@@ -39,9 +39,18 @@ fn subkey(key: &str) -> HSTRING {
 
 /// Writes `HKCU\…\Uninstall\<key>` with exactly `values`.
 pub fn reg_write(key: &str, values: &[(&str, RegValue)]) -> Result<(), String> {
+    reg_write_at(&subkey(key), values)
+}
+
+/// Writes `values` into `HKCU\<full>` (created if missing). A value named `""` is the key's default value.
+pub fn reg_write_hkcu(full: &str, values: &[(&str, RegValue)]) -> Result<(), String> {
+    reg_write_at(&HSTRING::from(full), values)
+}
+
+fn reg_write_at(sk: &HSTRING, values: &[(&str, RegValue)]) -> Result<(), String> {
     unsafe {
         let mut h = HKEY::default();
-        let e = RegCreateKeyExW(HKEY_CURRENT_USER, &subkey(key), None, PCWSTR::null(), REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut h, None);
+        let e = RegCreateKeyExW(HKEY_CURRENT_USER, sk, None, PCWSTR::null(), REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut h, None);
         if e != ERROR_SUCCESS {
             return Err(format!("RegCreateKeyExW: {e:?}"));
         }
@@ -87,10 +96,19 @@ pub fn reg_read(key: &str, value: &str) -> Option<String> {
 }
 
 pub fn reg_delete(key: &str) -> Result<(), String> {
-    let e = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, &subkey(key)) };
+    reg_delete_at(&subkey(key))
+}
+
+/// Deletes `HKCU\<full>` and everything under it. A missing key is fine.
+pub fn reg_delete_hkcu(full: &str) -> Result<(), String> {
+    reg_delete_at(&HSTRING::from(full))
+}
+
+fn reg_delete_at(sk: &HSTRING) -> Result<(), String> {
+    let e = unsafe { RegDeleteTreeW(HKEY_CURRENT_USER, sk) };
     if e == ERROR_SUCCESS || e == ERROR_FILE_NOT_FOUND {
         // RegDeleteTreeW empties the key; remove the key itself too.
-        let e2 = unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, &subkey(key)) };
+        let e2 = unsafe { RegDeleteKeyW(HKEY_CURRENT_USER, sk) };
         if e2 == ERROR_SUCCESS || e2 == ERROR_FILE_NOT_FOUND {
             return Ok(());
         }

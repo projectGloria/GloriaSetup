@@ -41,6 +41,7 @@ needs_webview2 = true
 data_folders  = ["%APPDATA%\\com.omniconvert.app", "%LOCALAPPDATA%\\com.omniconvert.app"]
 legacy_names  = ["OmniConvert"]        # optional extra DisplayNames to match old installers
 app_user_model_id = "com.omniconvert.app"   # optional, written on shortcuts (Tauri notifications)
+context_menu  = "Convert with OmniConvert"   # optional right-click label for folders, backgrounds, drives
 ```
 
 `publisher` is always `projectGloria` and is not configurable (GloriaLauncher contract).
@@ -181,6 +182,14 @@ is the registry write, `renames + 1` deleting the journal). The e2e tests use it
 ### Shortcuts
 Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\<Name>.lnk`) always; desktop optional. Both target the
 main exe (so they show the app's icon) and carry `app_user_model_id` when the manifest has one.
+
+### Context menu
+With `context_menu` set, the install writes a classic shell verb under three HKCU roots:
+`Software\Classes\Directory\shell`, `Directory\Background\shell` and `Drive\shell`, each as `projectGloria.<id>`
+with `(Default)` = the label, `Icon` = the main exe and `command\(Default)` = `"<main exe>" "%V"`. A later version
+without `context_menu` deletes the keys, and uninstall always deletes them. Failures are logged, not rolled back. On
+Windows 11 classic verbs show under **Show more options**. Explorer passes a drive root as `"C:\"`, so the app
+receives `C:"` and has to strip the quote itself.
 
 ### WebView2
 If `needs_webview2`: present when `pv` exists and is not `0.0.0.0` under either
