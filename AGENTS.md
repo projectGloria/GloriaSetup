@@ -31,6 +31,10 @@ powershell -ExecutionPolicy Bypass -File sandbox\run.ps1           # Windows San
 - `crates/gloria-stub`: the setup/uninstaller exe. `window.rs` (Win32 loop) → `app.rs` (state machine) →
   `ui.rs` (immediate-mode Direct2D drawing via `gfx.rs`). `real.rs` wires the UI and silent mode to `engine.rs`
   (install/uninstall/trampoline). `shot.rs` renders PNGs. Strings in `i18n/*.toml` (all four must have every key).
+- `action.yml`: composite action for app repos (tag → download release binaries, else build from source).
+  `.github/workflows/ci.yml` (build, tests incl. signing, stub size, action on the dummy), `release.yml` (`v*` tag).
+  `tools/make-test-cert.ps1`: throwaway self-signed code-signing PFX for tests. `tools/make-social-preview.ps1`
+  renders `assets/social-preview.png` (upload it by hand in the repo settings).
 - `examples/dummy`: test app + two icons + `pack.ps1`. Test modes: `--hold` (window, closes when asked),
   `--stubborn` (ignores close, must be force-closed), `--quiet` / `GLORIA_DUMMY_QUIET=1`, `GLORIA_DUMMY_DATA=<dir>`,
   fake old uninstaller (`/S` + `GLORIA_DUMMY_LEGACY_KEY=<HKCU key>`, optional `GLORIA_DUMMY_LEGACY_WIPE=<dir>`),
@@ -62,7 +66,9 @@ PE + payload appended after the last section: 64-byte header (`GLSETUP\0`, versi
 manifest JSON + tar/zstd archive + padding to 8. Read forward from the section end, never from EOF, and bounded by the
 security directory, so Authenticode signing doesn't break it. The uninstaller payload has `archive_len == 0`.
 **Order is fixed:** patch resources (icon purge, icon, version info) → append payload → sign (optional, last).
-`UpdateResource` drops overlays and anything after signing breaks the signature.
+`UpdateResource` drops overlays and anything after signing breaks the signature. Signing lives in `gloria-pack`
+(`--sign-pfx`, password only via `GLORIA_SIGN_PASSWORD`): `uninstall.exe` is signed before archiving, the setup last.
+The signing e2e test runs only with `GLORIA_TEST_SIGN_PFX` set (see `tools/make-test-cert.ps1`).
 
 ## User data rules
 

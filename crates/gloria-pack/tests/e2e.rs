@@ -11,6 +11,7 @@ use gloria_core::archive;
 use gloria_core::install_manifest::InstallManifest;
 use gloria_core::payload;
 use gloria_core::res;
+use gloria_pack::sign::{find_signtool, Sign};
 use gloria_pack::{icon, inspect, pack, Options};
 
 const UNINSTALL: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall";
@@ -76,6 +77,10 @@ impl TestApp {
 
     /// `pack` with extra gloria.toml lines and an optional WebView2 bootstrapper to bundle.
     fn pack_with(&self, v: &str, ico: &str, extra_toml: &str, webview2: Option<PathBuf>) -> PathBuf {
+        self.pack_signed(v, ico, extra_toml, webview2, None)
+    }
+
+    fn pack_signed(&self, v: &str, ico: &str, extra_toml: &str, webview2: Option<PathBuf>, sign: Option<Sign>) -> PathBuf {
         let (stub, dummy) = built();
         let app = self.work.join(format!("app-{v}"));
         let _ = std::fs::remove_dir_all(&app);
@@ -108,6 +113,7 @@ impl TestApp {
             out_dir: out,
             level: 3,
             webview2_bootstrapper: webview2,
+            sign,
         })
         .unwrap();
         p.setup
@@ -288,6 +294,56 @@ fn each_setup_gets_its_own_icon_and_version_and_no_gloria_icons() {
         assert_eq!(up.archive_len, 0, "{v}: uninstall.exe carries an archive");
         assert!(std::fs::metadata(&un).unwrap().len() < std::fs::metadata(&setup).unwrap().len());
     }
+}
+
+// ───────────────────────────── signing ─────────────────────────────
+
+/// Runs only with `GLORIA_TEST_SIGN_PFX=<test .pfx>` (password in `GLORIA_SIGN_PASSWORD`, may be empty) and signtool
+/// installed; CI makes a throwaway self-signed certificate for it. No timestamp server, so it works offline.
+#[test]
+fn signed_setup_and_uninstaller_keep_their_payload_and_install() {
+    let Some(pfx) = std::env::var_os("GLORIA_TEST_SIGN_PFX").map(PathBuf::from) else {
+        eprintln!("skipped: set GLORIA_TEST_SIGN_PFX to a test code-signing .pfx");
+        return;
+    };
+    let signtool = find_signtool().expect("GLORIA_TEST_SIGN_PFX is set but signtool.exe was not found");
+    let sign = Sign { signtool, pfx, password: std::env::var("GLORIA_SIGN_PASSWORD").ok().filter(|p| !p.is_empty()), timestamp_url: None };
+    let t = TestApp::new("Signed");
+    let setup = t.pack_signed("0.1.0", "dummy-a.ico", "", None, Some(sign.clone()));
+
+    let signed = |p: &Path| payload::pe_info(&std::fs::read(p).unwrap()).unwrap().security.is_some();
+    assert!(signed(&setup), "setup signed");
+    let i = inspect(&setup).unwrap();
+    assert!(i.payload.is_some(), "payload found after signing");
+    assert_eq!(i.string("ProductVersion"), Some("0.1.0"), "resources untouched by signing");
+
+    let d = t.install.to_string_lossy().into_owned();
+    assert_eq!(run(&setup, &["/S", &format!("/D={d}")]), 0);
+    let un = t.install.join("uninstall.exe");
+    assert!(signed(&un), "the installed uninstaller is signed too");
+    assert!(payload::read(&mut std::fs::File::open(&un).unwrap()).unwrap().unwrap().is_uninstaller());
+    assert_eq!(t.uninstall(&["/S"]), 0);
+    assert!(!t.has_key());
+
+    // A signed stub is refused: resources can't be patched without breaking its signature.
+    let (stub, _) = built();
+    let signed_stub = t.work.join("signed-stub.exe");
+    std::fs::copy(stub, &signed_stub).unwrap();
+    sign.sign(&signed_stub, "stub").unwrap();
+    let err = pack(&Options {
+        stub: signed_stub,
+        app_dir: t.work.join("app-0.1.0"),
+        manifest: t.work.join("gloria.toml"),
+        version: Some("0.1.0".into()),
+        icon: Some(root().join("examples/dummy/icons/dummy-a.ico")),
+        allow_default_icon: false,
+        out_dir: t.work.join("dist-signed-stub"),
+        level: 3,
+        webview2_bootstrapper: None,
+        sign: None,
+    })
+    .unwrap_err();
+    assert!(err.contains("signed"), "{err}");
 }
 
 // ───────────────────────────── install, update, uninstall ─────────────────────────────
@@ -696,6 +752,7 @@ fn bootstrapper_needs_needs_webview2() {
         out_dir: t.work.join("dist"),
         level: 3,
         webview2_bootstrapper: Some(bootstrapper),
+        sign: None,
     };
     std::fs::write(&manifest, toml("")).unwrap();
     assert!(pack(&o(dummy.clone())).unwrap_err().contains("needs_webview2"));

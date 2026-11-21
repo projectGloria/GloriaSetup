@@ -1,0 +1,162 @@
+name: GloriaSetup
+description: Build a per-user Windows setup (<Name>_<version>_x64-setup.exe) for a projectGloria app, sign it if a certificate is given, and attach it to the release.
+author: projectGloria
+branding:
+  icon: package
+  color: orange
+
+inputs:
+  app-dir:
+    description: Folder with the app's built files (main_exe from gloria.toml must be inside).
+    required: true
+  manifest:
+    description: Path to gloria.toml. Default is gloria.toml next to app-dir, then ./gloria.toml.
+    default: ''
+  version:
+    description: App version. Default is the tag name without a leading v when the workflow runs for a tag, else the version in gloria.toml.
+    default: ''
+  icon:
+    description: Overrides `icon` in gloria.toml (.ico or .png).
+    default: ''
+  webview2-bootstrapper:
+    description: MicrosoftEdgeWebview2Setup.exe to bundle (needs_webview2 apps only). Download it from Microsoft and commit or fetch it yourself.
+    default: ''
+  out-dir:
+    description: Output folder.
+    default: dist
+  certificate:
+    description: Base64 of a code-signing .pfx (from a secret). Empty means the setup is not signed.
+    default: ''
+  certificate-password:
+    description: Password of the .pfx (from a secret).
+    default: ''
+  timestamp-url:
+    description: RFC 3161 timestamp server used when signing.
+    default: http://timestamp.digicert.com
+  upload:
+    description: "auto: attach the setup to the release when the workflow runs for a tag. true / false: always / never."
+    default: auto
+  release-tag:
+    description: Release to attach the setup to. Default is the tag the workflow runs for.
+    default: ''
+  gloria-setup-version:
+    description: GloriaSetup release (e.g. v0.1.0) whose gloria-pack and stub to use. Default is the tag this action is used at (uses ...@v0.1.0); at a branch or commit it is built from source.
+    default: ''
+  token:
+    description: Token for downloading GloriaSetup and uploading to the release.
+    default: ${{ github.token }}
+
+outputs:
+  setup-path:
+    description: Full path of the built setup.
+    value: ${{ steps.pack.outputs.setup-path }}
+  setup-name:
+    description: File name of the built setup.
+    value: ${{ steps.pack.outputs.setup-name }}
+  signed:
+    description: "'true' when the setup was signed."
+    value: ${{ steps.pack.outputs.signed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Get gloria-pack
+      id: tool
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        WANT: ${{ inputs.gloria-setup-version }}
+        ACTION_REF: ${{ github.action_ref }}
+        ACTION_REPO: ${{ github.action_repository }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        if ($env:RUNNER_OS -ne 'Windows') { throw 'GloriaSetup packs on Windows only (runs-on: windows-latest)' }
+        $tag = if ($env:WANT) { $env:WANT } elseif ($env:ACTION_REF -match '^v\d+\.\d+\.\d+') { $env:ACTION_REF } else { '' }
+        $dir = Join-Path $env:RUNNER_TEMP 'gloria-setup-bin'
+        New-Item -ItemType Directory -Force $dir | Out-Null
+        if ($tag) {
+          $repo = if ($env:ACTION_REPO) { $env:ACTION_REPO } else { 'projectGloria/GloriaSetup' }
+          Write-Host "Using GloriaSetup $tag from $repo"
+          gh release download $tag -R $repo -D $dir --clobber -p gloria-pack.exe -p gloria-stub.exe -p SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { throw "could not download GloriaSetup $tag from $repo" }
+          foreach ($line in Get-Content (Join-Path $dir 'SHA256SUMS.txt')) {
+            $want, $name = $line -split '\s+', 2
+            $got = (Get-FileHash (Join-Path $dir $name) -Algorithm SHA256).Hash
+            if ($got -ne $want.ToUpper()) { throw "checksum mismatch for $name" }
+          }
+        } else {
+          Write-Host "Building GloriaSetup from source at $env:ACTION_PATH"
+          Push-Location $env:ACTION_PATH
+          try {
+            cargo build --release --locked -p gloria-stub -p gloria-pack
+            if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
+            Copy-Item target\release\gloria-pack.exe, target\release\gloria-stub.exe $dir
+          } finally { Pop-Location }
+        }
+        "dir=$dir" >> $env:GITHUB_OUTPUT
+
+    - name: Pack
+      id: pack
+      shell: pwsh
+      env:
+        TOOL_DIR: ${{ steps.tool.outputs.dir }}
+        APP_DIR: ${{ inputs.app-dir }}
+        MANIFEST: ${{ inputs.manifest }}
+        VERSION: ${{ inputs.version }}
+        ICON: ${{ inputs.icon }}
+        WEBVIEW2: ${{ inputs.webview2-bootstrapper }}
+        OUT_DIR: ${{ inputs.out-dir }}
+        CERT: ${{ inputs.certificate }}
+        GLORIA_SIGN_PASSWORD: ${{ inputs.certificate-password }}
+        TIMESTAMP_URL: ${{ inputs.timestamp-url }}
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $a = @('--app', $env:APP_DIR, '--stub', (Join-Path $env:TOOL_DIR 'gloria-stub.exe'), '--out', $env:OUT_DIR)
+        if ($env:MANIFEST) { $a += '--manifest', $env:MANIFEST }
+        $version = if ($env:VERSION) { $env:VERSION } elseif ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } else { '' }
+        if ($version) { $a += '--version', $version }
+        if ($env:ICON) { $a += '--icon', $env:ICON }
+        if ($env:WEBVIEW2) { $a += '--webview2-bootstrapper', $env:WEBVIEW2 }
+        $pfx = Join-Path $env:RUNNER_TEMP "gloria-sign-$([guid]::NewGuid()).pfx"
+        $signed = [bool]$env:CERT
+        try {
+          if ($signed) {
+            [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String(($env:CERT -replace '\s', '')))
+            $a += '--sign-pfx', $pfx
+            if ($env:TIMESTAMP_URL) { $a += '--timestamp-url', $env:TIMESTAMP_URL }
+          } else {
+            Write-Host '::notice::No certificate given: the setup is not signed, so SmartScreen may warn about it.'
+          }
+          $before = Get-Date
+          & (Join-Path $env:TOOL_DIR 'gloria-pack.exe') @a
+          if ($LASTEXITCODE -ne 0) { throw "gloria-pack failed ($LASTEXITCODE)" }
+        } finally {
+          Remove-Item $pfx -Force -ErrorAction SilentlyContinue
+        }
+        $setup = Get-ChildItem $env:OUT_DIR -Filter '*_x64-setup.exe' | Where-Object { $_.LastWriteTime -ge $before.AddSeconds(-2) } |
+          Sort-Object LastWriteTime | Select-Object -Last 1
+        if (-not $setup) { throw "no setup found in $env:OUT_DIR" }
+        "setup-path=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+        "setup-name=$($setup.Name)" >> $env:GITHUB_OUTPUT
+        "signed=$($signed.ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+    - name: Attach to the release
+      shell: pwsh
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        UPLOAD: ${{ inputs.upload }}
+        TAG: ${{ inputs.release-tag }}
+        REF_TYPE: ${{ github.ref_type }}
+        REF_NAME: ${{ github.ref_name }}
+        SETUP: ${{ steps.pack.outputs.setup-path }}
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $tag = if ($env:TAG) { $env:TAG } elseif ($env:REF_TYPE -eq 'tag') { $env:REF_NAME } else { '' }
+        $go = switch ($env:UPLOAD) { 'true' { $true } 'false' { $false } default { [bool]$tag } }
+        if (-not $go) { Write-Host "Not attaching $env:SETUP to a release (upload: $env:UPLOAD)"; exit 0 }
+        if (-not $tag) { throw 'upload is true but there is no tag: set release-tag' }
+        gh release upload $tag $env:SETUP --clobber -R $env:GITHUB_REPOSITORY
+        if ($LASTEXITCODE -ne 0) { throw "could not attach the setup to release $tag (does the release exist?)" }

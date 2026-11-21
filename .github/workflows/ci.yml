@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build (warning-free)
+        run: cargo build --workspace --locked
+
+      - name: Throwaway signing certificate
+        shell: pwsh
+        run: |
+          $pw = [guid]::NewGuid().ToString()
+          "::add-mask::$pw"
+          "GLORIA_SIGN_PASSWORD=$pw" >> $env:GITHUB_ENV
+          $env:GLORIA_SIGN_PASSWORD = $pw
+          ./tools/make-test-cert.ps1 -Out "$env:RUNNER_TEMP\test-sign.pfx"
+          "GLORIA_TEST_SIGN_PFX=$env:RUNNER_TEMP\test-sign.pfx" >> $env:GITHUB_ENV
+
+      - name: Test (unit + end to end, signing included)
+        run: cargo test --workspace --locked
+
+      - name: Release build and stub size
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p gloria-stub -p gloria-pack
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $mb = (Get-Item target\release\gloria-stub.exe).Length / 1MB
+          "gloria-stub.exe: {0:N2} MB" -f $mb
+          if ($mb -ge 5) { throw 'the stub must stay under 5 MB' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gloria-setup-bin
+          path: |
+            target/release/gloria-pack.exe
+            target/release/gloria-stub.exe
+
+  # Runs this repo's action the way an app repo would, on the dummy app, signed with a throwaway certificate.
+  action:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build the dummy app
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p gloria-dummy
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force app | Out-Null
+          Copy-Item target\release\dummy.exe app\
+          Set-Content -Encoding ascii app\version.txt 0.3.0
+          $pw = [guid]::NewGuid().ToString()
+          "::add-mask::$pw"
+          $env:GLORIA_SIGN_PASSWORD = $pw
+          ./tools/make-test-cert.ps1 -Out "$env:RUNNER_TEMP\test-sign.pfx"
+          "CERT_B64=$([Convert]::ToBase64String([IO.File]::ReadAllBytes("$env:RUNNER_TEMP\test-sign.pfx")))" >> $env:GITHUB_ENV
+          "CERT_PW=$pw" >> $env:GITHUB_ENV
+          Remove-Item "$env:RUNNER_TEMP\test-sign.pfx"
+
+      - name: GloriaSetup action
+        id: setup
+        uses: ./
+        with:
+          app-dir: app
+          manifest: examples/dummy/gloria.toml
+          icon: examples/dummy/icons/dummy-a.ico
+          version: 0.3.0
+          certificate: ${{ env.CERT_B64 }}
+          certificate-password: ${{ env.CERT_PW }}
+          timestamp-url: ''
+          upload: 'false'
+
+      - name: Check the setup
+        shell: pwsh
+        env:
+          SETUP: ${{ steps.setup.outputs.setup-path }}
+        run: |
+          if ('${{ steps.setup.outputs.setup-name }}' -ne 'GloriaSetupDummy_0.3.0_x64-setup.exe') { throw 'unexpected name' }
+          if ('${{ steps.setup.outputs.signed }}' -ne 'true') { throw 'not reported as signed' }
+          $s = Get-AuthenticodeSignature $env:SETUP
+          if (-not $s.SignerCertificate) { throw "no signature: $($s.StatusMessage)" }
+          $p = Start-Process $env:SETUP -ArgumentList '/S', '--dry-run' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "dry run exit $($p.ExitCode)" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dummy-setup
+          path: ${{ steps.setup.outputs.setup-path }}

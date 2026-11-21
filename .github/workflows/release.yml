@@ -1,0 +1,46 @@
+name: Release
+
+# Push a tag like v0.1.0 (matching the workspace version) to publish gloria-pack.exe and gloria-stub.exe. App repos
+# that use projectGloria/GloriaSetup@v0.1.0 download exactly these files.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the workspace version
+        shell: pwsh
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match workspace version $v" }
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p gloria-stub -p gloria-pack
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target\release\gloria-pack.exe, target\release\gloria-stub.exe out\
+          Get-ChildItem out -Filter *.exe | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content -Encoding ascii out\SHA256SUMS.txt
+          Get-Content out\SHA256SUMS.txt
+
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME out\gloria-pack.exe out\gloria-stub.exe out\SHA256SUMS.txt `
+            --title "GloriaSetup $env:GITHUB_REF_NAME" --generate-notes

@@ -1,11 +1,12 @@
 //! gloria-pack: builds `<Name>_<version>_x64-setup.exe` from the stub, an app folder and `gloria.toml`.
 //!
-//! Order matters: patch resources (icon, version info) → append the payload → sign (outside this tool).
+//! Order matters: patch resources (icon, version info) → append the payload → sign (optional, `--sign-pfx`).
 //! The stub's GloriaSetup icon is purged from every copy that carries an app, so neither the setup nor the
 //! `uninstall.exe` inside it ever shows it, unless `--allow-default-icon` makes an explicit test build.
 
 pub mod icon;
 pub mod resources;
+pub mod sign;
 
 use std::path::{Path, PathBuf};
 
@@ -29,6 +30,8 @@ pub struct Options {
     pub level: i32,
     /// The WebView2 Evergreen bootstrapper to bundle (apps with `needs_webview2`). Run only if the runtime is missing.
     pub webview2_bootstrapper: Option<PathBuf>,
+    /// Authenticode-sign the uninstaller and the setup, each as its last change.
+    pub sign: Option<sign::Sign>,
 }
 
 #[derive(Debug)]
@@ -166,6 +169,14 @@ pub fn pack(o: &Options) -> Result<Packed, String> {
         version_info(&app, format!("{} Uninstaller", app.name), UNINSTALLER_NAME),
     )?;
     payload::append(&mut uninstaller, &runtime.to_json(), &[], FLAG_UNINSTALLER | test_flag).map_err(|e| e.to_string())?;
+    if let Some(s) = &o.sign {
+        // Signed before it goes into the archive, so the installed uninstaller carries the signature too.
+        std::fs::write(&tmp, &uninstaller).map_err(|e| format!("{}: {e}", tmp.display()))?;
+        let r = s.sign(&tmp, &format!("{} Uninstaller", app.name)).and_then(|_| std::fs::read(&tmp).map_err(|e| e.to_string()));
+        let _ = std::fs::remove_file(&tmp);
+        uninstaller = r?;
+        check_payload(&uninstaller, "uninstall.exe")?;
+    }
     let uninstaller_len = uninstaller.len() as u64;
     files.push((UNINSTALLER_NAME.to_string(), uninstaller));
 
@@ -180,8 +191,26 @@ pub fn pack(o: &Options) -> Result<Packed, String> {
     payload::append(&mut setup, &runtime.to_json(), &archive_bytes, test_flag).map_err(|e| e.to_string())?;
     let out = o.out_dir.join(&file_name);
     std::fs::write(&out, &setup).map_err(|e| format!("{}: {e}", out.display()))?;
+    if let Some(s) = &o.sign {
+        let signed = s.sign(&out, &format!("{} Setup", app.name)).and_then(|_| std::fs::read(&out).map_err(|e| e.to_string()));
+        if let Err(e) = signed.and_then(|b| check_payload(&b, &file_name)) {
+            let _ = std::fs::remove_file(&out);
+            return Err(e);
+        }
+    }
 
     Ok(Packed { setup: out, manifest: runtime, files: entries, uninstaller_len })
+}
+
+/// After signing: the file must be signed and its payload must still be found and match its hash.
+fn check_payload(bytes: &[u8], what: &str) -> Result<(), String> {
+    let info = payload::pe_info(bytes).map_err(|e| format!("{what}: {e}"))?;
+    if info.security.is_none() {
+        return Err(format!("{what}: signtool reported success but the file has no signature"));
+    }
+    let mut c = std::io::Cursor::new(bytes);
+    let p = payload::read(&mut c).map_err(|e| format!("{what} after signing: {e}"))?.ok_or_else(|| format!("{what}: payload lost by signing"))?;
+    payload::verify(&mut c, &p).map_err(|e| format!("{what} after signing: {e}"))
 }
 
 /// What a built exe carries, for tests and `gloria-pack --inspect`.

@@ -8,7 +8,7 @@
   and Turkish.
 - **`gloria-pack`** (`crates/gloria-pack`): turns the stub, an app folder and a `gloria.toml` into
   `<Name>_<version>_x64-setup.exe`, with the app's own icon.
-- **GitHub Action**: packs and uploads the setup in an app's release job (milestone 3).
+- **GitHub Action** (`action.yml`): packs, optionally signs and uploads the setup in an app's release job.
 
 How it works: [docs/design.md](docs/design.md). Approved screens: [design/mockups/index.html](design/mockups/index.html).
 
@@ -30,6 +30,46 @@ target\release\gloria-pack.exe --app path\to\built\app --manifest path\to\gloria
 
 `gloria.toml` is described in [docs/design.md § App manifest](docs/design.md#app-manifest-gloriatoml-in-the-app-repo).
 `gloria-pack --inspect <setup.exe>` prints what a setup contains.
+
+### Signing
+
+```powershell
+$env:GLORIA_SIGN_PASSWORD = '<pfx password>'
+target\release\gloria-pack.exe --app ... --sign-pfx C:\Users\you\cert.pfx --timestamp-url http://timestamp.digicert.com
+```
+
+`gloria-pack` signs `uninstall.exe` before it goes into the archive and the setup after its payload is appended,
+then checks the signed setup still finds its payload. signtool comes from `PATH` or the newest Windows SDK
+(`--signtool` to choose). Without a certificate the setup is unsigned and SmartScreen may warn until it builds
+reputation.
+
+## Use it in an app's release
+
+```yaml
+jobs:
+  setup:
+    runs-on: windows-latest
+    permissions:
+      contents: write          # to attach the setup to the release
+    steps:
+      - uses: actions/checkout@v4
+      # ... build the app into app-dist\ ...
+      - uses: projectGloria/GloriaSetup@v0.1.0
+        with:
+          app-dir: app-dist
+          manifest: gloria.toml
+          certificate: ${{ secrets.WINDOWS_PFX_BASE64 }}             # optional; empty = unsigned
+          certificate-password: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+```
+
+Run for a tag (`v1.2.0`), it packs version `1.2.0` and attaches `<Name>_1.2.0_x64-setup.exe` to that tag's release,
+which must already exist. At a version tag it downloads that GloriaSetup release's `gloria-pack.exe` and stub and
+checks their SHA-256; at a branch or commit it builds them from source. Other inputs: `version`, `icon`,
+`webview2-bootstrapper`, `out-dir`, `timestamp-url`, `upload` (`auto`/`true`/`false`), `release-tag`,
+`gloria-setup-version`. Outputs: `setup-path`, `setup-name`, `signed`. All in [action.yml](action.yml).
+
+Releasing GloriaSetup itself: bump `version` in `Cargo.toml`, push, then push the tag `v<version>`. The release
+workflow tests, builds and publishes `gloria-pack.exe`, `gloria-stub.exe` and `SHA256SUMS.txt`.
 
 ## Setup command line
 
@@ -161,7 +201,23 @@ with WARP, the software renderer that VMs and remote desktops get.
 
 To move a log out, copy it from `%TEMP%` in the sandbox and paste it on your desktop. Clipboard sharing is on.
 
-### 4. A real app
+### 4. Signing
+
+Make a throwaway self-signed certificate (Windows doesn't trust it, so the publisher still shows as unknown) and run
+the signing test, which packs, signs, installs and uninstalls:
+
+```powershell
+$env:GLORIA_SIGN_PASSWORD = 'test'
+powershell -ExecutionPolicy Bypass -File tools\make-test-cert.ps1 -Out target\test-sign.pfx
+$env:GLORIA_TEST_SIGN_PFX = (Resolve-Path target\test-sign.pfx).Path
+cargo test -p gloria-pack --test e2e signed
+```
+
+With those variables set, `gloria-pack ... --sign-pfx target\test-sign.pfx` signs a setup by hand. Check it with
+`Get-AuthenticodeSignature <setup.exe>` (it names `CN=GloriaSetup Test Signing`, with an untrusted root) or in file
+properties → Digital Signatures. CI does the same on every push, and also runs the action on the dummy app.
+
+### 5. A real app
 
 Pack a real projectGloria app, for example OmniConvert. Put the files the app needs at run time in one folder (for a
 Tauri app, the release exe plus any resources), and write a `gloria.toml` for it like the example in
@@ -177,8 +233,9 @@ target\release\gloria-pack.exe --app C:\Users\you\staging\OmniConvert --manifest
 - **Migration from an old installer:** install the app's previous NSIS, MSI or Inno build first, then run the new
   setup. It opens on the migrate screen, names the old install (and says "all users" when it needs admin), backs up
   the data folders, runs the old uninstaller (a UAC prompt only for all-users installs; declining stops with code 4)
-  and installs. The app's settings survive unless you tick the data box. Try an all-users (HKLM) install in the
-  Sandbox: the automated tests don't cover that path.
+  and installs. The app's settings survive unless you tick the data box. The automated tests cover per-user old
+  installs only; the all-users (HKLM) path, with UAC accepted and declined, was checked by hand. Try a real
+  all-users installer in the Sandbox too.
 - **WebView2:** for `needs_webview2` apps, pass `--webview2-bootstrapper <MicrosoftEdgeWebview2Setup.exe>` (download it
   from Microsoft yourself). Where the runtime is missing, the setup runs it first. Without network it fails, and the
   setup exits with code 5 and leaves nothing installed.

@@ -333,9 +333,17 @@ Latin + Latin Extended-A so Turkish `ğ ş ı İ` render with the embedded fonts
 
 ## 13. CI and signing
 
-`action.yml` (composite, `windows-latest`): downloads a pinned `gloria-pack` + stub release, runs `gloria-pack`, runs
-`signtool` only when `certificate` / `certificate-password` inputs are non-empty (base64 PFX from secrets), then
-uploads `<Name>_<version>_x64-setup.exe` to the release. Unsigned builds may trigger SmartScreen until a certificate
+`action.yml` (composite, `windows-latest`): at a version tag (`uses: projectGloria/GloriaSetup@v0.1.0`) it downloads
+that release's `gloria-pack.exe` + `gloria-stub.exe` and checks them against `SHA256SUMS.txt`; at a branch or commit
+it builds them from source. It runs `gloria-pack`, which signs with `signtool` only when the `certificate` input (base64
+PFX from secrets) is non-empty: the PFX goes to `RUNNER_TEMP` for that step only and the password reaches signtool
+through `GLORIA_SIGN_PASSWORD`, never the command line of a logged step. Signing happens inside `gloria-pack` because
+`uninstall.exe` must be signed before it is archived; the signed setup is re-read to prove its payload survived. Then
+the action uploads `<Name>_<version>_x64-setup.exe` to the release.
+
+This repo's CI (`.github/workflows/ci.yml`) builds warning-free, runs all tests with a throwaway self-signed
+certificate (`tools/make-test-cert.ps1`) so the signing test runs too, checks the stub stays under 5 MB, and runs the
+action on the dummy app. `release.yml` publishes the binaries for a `v*` tag that matches the workspace version. Unsigned builds may trigger SmartScreen until a certificate
 exists; the stub stays "clean" (no self-modification, no network, no packed/encrypted code) to reduce Defender noise.
 
 ## 14. Milestones
@@ -351,7 +359,9 @@ exists; the stub stays "clean" (no self-modification, no network, no packed/encr
 3. **Migration + WebView2.** Legacy NSIS / MSI / Inno detection in both registry views, elevation, data backup and
    restore, bundled WebView2 bootstrapper. Done: automated tests cover per-user migrations (quiet string and NSIS
    `_?=`, data restored even when the old uninstaller wipes it, `/PURGE`) and the bootstrapper (runs only when the
-   runtime is missing, failure exits 5 with nothing installed). The elevated HKLM path is checked by hand in Windows
-   Sandbox with a real all-users installer.
-4. **CI + polish.** Composite action, optional signing, README "How to test", social preview image.
+   runtime is missing, failure exits 5 with nothing installed). The elevated HKLM path (UAC accepted, and declined =
+   exit 4 with nothing changed and no backup left) was checked by hand with a fake all-users install.
+4. **CI + polish.** Composite action, optional signing, README "How to test", social preview image. Done: signing in
+   `gloria-pack` (tested with a self-signed certificate), the action (tested by CI on the dummy), CI and release
+   workflows, `assets/social-preview.png`.
 5. **Pilot.** OmniConvert migrated in its own repo (separate session).
