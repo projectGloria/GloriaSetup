@@ -63,6 +63,13 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(out_dir.join("credit.ico"), res::build_ico(std::slice::from_ref(credit))).unwrap();
 
+    // The projectGloria mark next to the GitHub link in every footer. Embedded data too, never an icon resource.
+    let red_path = root.join("assets/brand/GloriaRed.ico");
+    println!("cargo:rerun-if-changed={}", red_path.display());
+    let red = res::parse_ico(&std::fs::read(&red_path).expect("assets/brand/GloriaRed.ico")).expect("valid GloriaRed.ico");
+    let red = red.iter().filter(|i| i.width >= 64).min_by_key(|i| i.width).expect("a 64 px or larger GloriaRed image");
+    std::fs::write(out_dir.join("gloria_red.ico"), res::build_ico(std::slice::from_ref(red))).unwrap();
+
     let out = out_dir.join("gloria-stub.res");
     std::fs::write(&out, res::res_file(&entries)).unwrap();
     println!("cargo:rustc-link-arg-bins={}", out.display());

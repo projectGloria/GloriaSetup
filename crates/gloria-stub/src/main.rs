@@ -78,6 +78,7 @@ fn preview(args: &Args) -> windows::core::Result<i32> {
         let s = strings(lang, &info);
         let mut a = App::new(info, s, true);
         a.credit = credit(&wic_g);
+        a.gloria = gloria_red(&wic_g);
         a
     };
     if let Some(dir) = &args.screenshot {
@@ -161,4 +162,11 @@ const CREDIT_ICO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/credit.ico")
 
 pub(crate) fn credit(g: &Gfx) -> Option<Image> {
     Image::decode(&g.wic, CREDIT_ICO).ok()
+}
+
+const GLORIA_RED_ICO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/gloria_red.ico"));
+
+/// The projectGloria mark shown next to the GitHub link in every footer.
+pub(crate) fn gloria_red(g: &Gfx) -> Option<Image> {
+    Image::decode(&g.wic, GLORIA_RED_ICO).ok()
 }

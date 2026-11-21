@@ -491,6 +491,11 @@ pub fn open_file(p: &Path) {
     let _ = unsafe { ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(p.as_os_str()), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
 }
 
+/// Opens a web page in the default browser.
+pub fn open_url(url: &str) {
+    let _ = unsafe { ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(url), PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL) };
+}
+
 /// Starts `exe` with a raw argument string (our own NSIS-style parser reads it back).
 pub fn spawn(exe: &Path, args: &str) -> std::io::Result<u32> {
     let child = std::process::Command::new(exe).raw_arg(args).spawn()?;

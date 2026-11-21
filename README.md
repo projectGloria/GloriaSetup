@@ -105,8 +105,8 @@ target\release\gloria-stub.exe --screenshot out\shots
 - Pages: `welcome`, `options`, `options-error`, `progress`, `done`, `update`, `update-running`, `reinstall`,
   `downgrade`, `migrate`, `uninstall`, `uninstall-progress`, `uninstall-done`, `error`.
 - Buttons work and jobs are simulated. Nothing is installed.
-- `--screenshot` writes every page in every language to `out\shots\<lang>\<page>.png`, plus `update-waiting` and
-  `update-stuck`. Compare them with the mockups.
+- `--screenshot` writes every page in every language to `out\shots\<lang>\<page>.png`, plus `update-waiting`,
+  `update-stuck` and `welcome-link-hover` (the footer's GitHub link in its hover state). Compare them with the mockups.
 - Running the bare stub with no flags also opens the preview. It is the only exe that shows the GloriaSetup icon.
 
 ### 2. Install, update and uninstall the dummy app on your PC

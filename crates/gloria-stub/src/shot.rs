@@ -9,16 +9,16 @@ use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Imaging::*;
 
-use crate::app::{App, Page, PAGE_IDS};
+use crate::app::{Act, App, Page, PAGE_IDS};
 use crate::gfx::{save_png, Gfx, Painter, Res};
 use crate::i18n::LANGS;
 use crate::ui::{self, Input, H, W};
 
 /// Extra states beyond the mockup pages.
-pub const EXTRA_IDS: [&str; 2] = ["update-waiting", "update-stuck"];
+pub const EXTRA_IDS: [&str; 3] = ["update-waiting", "update-stuck", "welcome-link-hover"];
 
 /// Renders one screen to a PNG at `scale` (1 = 96 DPI).
-pub fn render(g: &Gfx, app: &App, scale: f32, path: &Path) -> Result<()> {
+pub fn render(g: &Gfx, app: &App, inp: Input, scale: f32, path: &Path) -> Result<()> {
     unsafe {
         let (pw, ph) = ((W * scale).round() as u32, (H * scale).round() as u32);
         let bmp = g.wic.CreateBitmap(pw, ph, &GUID_WICPixelFormat32bppPBGRA, WICBitmapCacheOnLoad)?;
@@ -37,7 +37,7 @@ pub fn render(g: &Gfx, app: &App, scale: f32, path: &Path) -> Result<()> {
         {
             let mut p = Painter::new(g, dc, &mut res, scale)?;
             // `now` is far past every animation start, so pages and modals are fully in.
-            ui::draw(&mut p, app, Input { field_text: true, ..Default::default() }, 10.0);
+            ui::draw(&mut p, app, inp, 10.0);
         }
         rt.EndDraw(None, None)?;
         if let Some(dir) = path.parent() {
@@ -54,13 +54,20 @@ pub fn all(dir: &Path, scale: f32, mut make: impl FnMut(&str) -> App) -> Result<
         let g = Gfx::new(lang)?;
         for id in PAGE_IDS.iter().chain(EXTRA_IDS.iter()) {
             let mut app = make(lang);
-            app.preview_page(id);
+            // `welcome-link-hover`: the welcome page with the pointer over the footer's GitHub link.
+            let hover = *id == "welcome-link-hover";
+            app.preview_page(if hover { "welcome" } else { id });
+            let mut inp = Input { field_text: true, ..Default::default() };
+            if hover {
+                inp.hover = Some(Act::OpenGithub);
+                inp.link = 1.0;
+            }
             app.page_t0 = -10.0;
             app.modal_t0 = -10.0;
             if matches!(app.page, Page::Progress | Page::UninstallProgress) {
                 app.freeze_progress(62.0);
             }
-            render(&g, &app, scale, &dir.join(lang).join(format!("{id}.png")))?;
+            render(&g, &app, inp, scale, &dir.join(lang).join(format!("{id}.png")))?;
             n += 1;
         }
     }

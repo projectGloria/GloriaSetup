@@ -168,8 +168,13 @@ pub enum Act {
     Close,
     LaunchApp,
     OpenLog,
+    /// The projectGloria GitHub link in the footer.
+    OpenGithub,
     Noop,
 }
+
+/// Where the footer link goes.
+pub const GITHUB_URL: &str = "https://github.com/ProjectGloria";
 
 /// What the window must do after an action.
 #[derive(Clone, Debug, PartialEq)]
@@ -181,6 +186,8 @@ pub enum Effect {
     /// Launch the installed app, then exit 0.
     LaunchAndExit,
     OpenLog,
+    /// Open a web page in the default browser; the window stays.
+    OpenUrl(&'static str),
     /// The engine should start this job (real mode).
     StartJob(Flow),
     /// Ask the running app to close (real mode).
@@ -223,6 +230,8 @@ pub struct App {
     pub check: FolderCheck,
     /// GloriaSetup credit image for the done screens.
     pub credit: Option<Image>,
+    /// projectGloria mark (GloriaRed) for the footer link.
+    pub gloria: Option<Image>,
     /// "Close it for me": the closer thread writes Some(true) when the app is gone, Some(false) when it timed out.
     pub closing: Option<Arc<Mutex<Option<bool>>>>,
     /// An effect raised by `tick` (not by a click) for the window to run.
@@ -258,6 +267,7 @@ impl App {
             sys: SystemDirs::from_env(env),
             check: FolderCheck { final_dir: PathBuf::new(), appended: false, err: None },
             credit: None,
+            gloria: None,
             closing: None,
             pending: None,
             info,
@@ -464,6 +474,7 @@ impl App {
                 return Effect::LaunchAndExit;
             }
             Act::OpenLog => return Effect::OpenLog,
+            Act::OpenGithub => return Effect::OpenUrl(GITHUB_URL),
         }
         Effect::None
     }

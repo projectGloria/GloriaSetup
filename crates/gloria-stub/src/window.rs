@@ -50,6 +50,8 @@ struct State {
     edit_visible: bool,
     tracking: bool,
     timer: bool,
+    /// Footer link hover animation: from `.0` to `.1`, started at `.2`.
+    link: (f32, f32, f64),
     exit: Option<i32>,
     icons: (HICON, HICON),
 }
@@ -58,7 +60,25 @@ impl State {
     fn now(&self) -> f64 {
         self.t0.elapsed().as_secs_f64()
     }
+    /// How far the footer link's hover effect is in (0..1), eased.
+    fn link_k(&self, now: f64) -> f32 {
+        let (from, to, t0) = self.link;
+        let t = ((now - t0) as f32 / LINK_ANIM).clamp(0.0, 1.0);
+        let t = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        from + (to - from) * t
+    }
+    /// Retargets the link hover animation after the hovered control changed.
+    fn hover_changed(&mut self) {
+        let now = self.now();
+        let to = if self.inp.hover == Some(Act::OpenGithub) { 1.0 } else { 0.0 };
+        if to != self.link.1 {
+            self.link = (self.link_k(now), to, now);
+            start_timer(self);
+        }
+    }
 }
+
+const LINK_ANIM: f32 = 0.22;
 
 pub fn run(g: Gfx, mut app: App, software: bool, handler: Handler) -> Result<i32> {
     unsafe {
@@ -110,6 +130,7 @@ pub fn run(g: Gfx, mut app: App, software: bool, handler: Handler) -> Result<i32
             edit_visible: false,
             tracking: false,
             timer: false,
+            link: (0.0, 0.0, 0.0),
             exit: None,
             icons: (HICON::default(), HICON::default()),
         });
@@ -250,6 +271,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let h = hit(&st.frame, x, y);
                 if h != st.inp.hover {
                     st.inp.hover = h;
+                    st.hover_changed();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
@@ -258,6 +280,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 st.tracking = false;
                 if st.inp.hover.is_some() {
                     st.inp.hover = None;
+                    st.hover_changed();
                     let _ = InvalidateRect(Some(hwnd), None, false);
                 }
                 LRESULT(0)
@@ -299,7 +322,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_TIMER => {
                 let now = st.now();
-                let mut moving = st.app.tick(now);
+                let mut moving = st.app.tick(now) || now - st.link.2 < LINK_ANIM as f64;
                 if let Some(eff) = st.app.pending.take() {
                     if let Some(code) = (st.handler)(&mut st.app, eff, hwnd) {
                         st.exit = Some(code);
@@ -399,6 +422,7 @@ fn act(st: &mut State, a: Act) {
             let _ = ShowWindow(st.hwnd, SW_MINIMIZE);
         },
         Effect::Browse => browse(st),
+        Effect::OpenUrl(url) => crate::sys::open_url(url),
         other => {
             if let Some(code) = (st.handler)(&mut st.app, other, st.hwnd) {
                 st.exit = Some(code);
@@ -412,6 +436,7 @@ fn act(st: &mut State, a: Act) {
     if st.app.page != before {
         st.inp.focus = None;
         st.inp.hover = None;
+        st.link = (0.0, 0.0, 0.0);
     }
     start_timer(st);
     sync_edit(st);
@@ -515,6 +540,7 @@ fn render(st: &mut State) {
         rt.BeginDraw();
         let mut inp = st.inp;
         inp.field_text = !st.edit_visible;
+        inp.link = st.link_k(now);
         {
             let mut p = Painter::new(&st.g, dc, &mut st.res, st.scale)?;
             st.frame = ui::draw(&mut p, &st.app, inp, now);

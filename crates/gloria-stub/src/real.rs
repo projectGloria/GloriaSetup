@@ -157,6 +157,7 @@ fn new_app(g: &Gfx, src_m: gloria_core::manifest::RuntimeManifest, lang: &str) -
     let s = crate::strings(lang, &info);
     let mut a = App::new(info, s, false);
     a.credit = crate::credit(g);
+    a.gloria = crate::gloria_red(g);
     Ok(a)
 }
 

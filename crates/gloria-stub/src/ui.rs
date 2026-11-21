@@ -31,6 +31,9 @@ const OK: Color = hex(0x86c49a);
 const WHITE: Color = hex(0xffffff);
 const CREAM: Color = hex(0xf2f1ee);
 const WIN_BORDER: Color = hex(0x26262d);
+/// projectGloria red (GloriaRed.ico) for the footer link's hover.
+const GLORIA_RED: Color = hex(0xd0141a);
+const GLORIA_RED_HI: Color = hex(0xff5c5c);
 
 const MONO: Font = font(Family::Mono, 400, 10.5);
 const KICKER: Font = font(Family::Mono, 600, 10.0).track(0.2);
@@ -67,6 +70,8 @@ pub struct Input {
     pub field_focus: bool,
     /// Draw the folder text with DirectWrite (screenshots, transitions); otherwise the native edit shows it.
     pub field_text: bool,
+    /// Footer GitHub link hover effect, 0 (rest) to 1 (fully in). The window animates it.
+    pub link: f32,
 }
 
 /// Result of a frame: clickable regions in tab order, the path field rect, and whether it is visible.
@@ -90,6 +95,11 @@ enum Badge {
     Ok,
     Err,
     Gray,
+}
+
+fn mix(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    Color { r: a.r + (b.r - a.r) * t, g: a.g + (b.g - a.g) * t, b: a.b + (b.b - a.b) * t, a: a.a + (b.a - a.a) * t }
 }
 
 fn ease_out(t: f32) -> f32 {
@@ -142,7 +152,7 @@ impl<'u, 'a> Ui<'u, 'a> {
             {
                 let (app, inp, a, nowf) = (self.app, self.inp, self.a, self.now);
                 self.p.blurred(W, H, 5.0, |sub| {
-                    let mut u = Ui { p: sub, app, inp: Input { hover: None, focus: None, pressed: None, field_text: true, ..inp }, hits: Vec::new(), field: None, a, now: nowf };
+                    let mut u = Ui { p: sub, app, inp: Input { hover: None, focus: None, pressed: None, field_text: true, link: 0.0, ..inp }, hits: Vec::new(), field: None, a, now: nowf };
                     u.wash();
                     u.page();
                     inner_hits = u.hits;
@@ -390,23 +400,25 @@ impl<'u, 'a> Ui<'u, 'a> {
         w
     }
 
-    /// Lays out footer buttons: `left` from the left edge, `right` from the right edge (last item rightmost).
+    /// Lays out the footer: the GitHub link at the left edge on every page, then `left` buttons after it, and `right`
+    /// buttons from the right edge (last item rightmost). `credit` puts the GloriaSetup credit just above the footer.
     fn footer(&mut self, credit: bool, left: &[(&str, Kind, Option<&'static str>, Act, bool)], right: &[(&str, Kind, Option<&'static str>, Act, bool, bool)]) {
         let y = FOOT_Y;
-        self.p.fill(rect(1.0, y, W - 2.0, H - 1.0 - y), PANEL.alpha(0.85));
-        self.p.hline(1.0, W - 1.0, y, LINE);
-        let by = y + 1.0 + (63.0 - 36.0) / 2.0;
-        let mut x = CONTENT_X;
         if credit {
             if let Some(img) = &self.app.credit {
                 let f = font(Family::Mono, 400, 8.5).track(0.16);
                 let s = self.up("credit");
-                let cy = y + 32.0;
+                let cy = y - 22.0;
                 let img = img.clone();
-                self.p.image(&img, rect(x, cy - 6.5, 13.0, 13.0), 2.0, 0.8);
-                x += 20.0 + self.p.label(f, &s, x + 20.0, cy - self.lh(f) / 2.0, FAINT) + 10.0;
+                self.p.image(&img, rect(CONTENT_X, cy - 6.5, 13.0, 13.0), 2.0, 0.8);
+                self.p.label(f, &s, CONTENT_X + 20.0, cy - self.lh(f) / 2.0, FAINT);
             }
         }
+        self.p.fill(rect(1.0, y, W - 2.0, H - 1.0 - y), PANEL.alpha(0.85));
+        self.p.hline(1.0, W - 1.0, y, LINE);
+        let by = y + 1.0 + (63.0 - 36.0) / 2.0;
+        let mut x = CONTENT_X;
+        x += self.github_link(x, y + 32.0) + 18.0;
         for (label, kind, icon, act, en) in left {
             let w = self.button(x, by, label, *kind, *icon, *act, *en, false);
             x += w + 10.0;
@@ -420,6 +432,66 @@ impl<'u, 'a> Ui<'u, 'a> {
             self.button(rx, by, label, *kind, *icon, *act, *en, *sp);
             rx += w + 10.0;
         }
+    }
+
+    /// GloriaRed mark + "github.com/ProjectGloria", vertically centred on `cy`. On hover the mark lights up with a red
+    /// glow and ring, the text brightens, a red underline sweeps in and an arrow slides out. Returns the width.
+    fn github_link(&mut self, x: f32, cy: f32) -> f32 {
+        let act = Act::OpenGithub;
+        let k = self.inp.link.clamp(0.0, 1.0);
+        let down = self.inp.hover == Some(act) && self.inp.pressed == Some(act);
+        let cy = if down { cy + 1.0 } else { cy };
+        let f = font(Family::Mono, 500, 10.0).track(0.02);
+        let (host, org) = ("github.com/", "ProjectGloria");
+        let hw = self.p.g.measure(f, host);
+        let ow = self.p.g.measure(f, org);
+        let size = 20.0;
+        let ir = rect(x, cy - size / 2.0, size, size);
+        let tx = ir.r() + 9.0;
+        let arrow = 10.0;
+        let w = tx - x + hw + ow + 5.0 + arrow;
+        self.hits.push(Hit { r: rect(x - 5.0, cy - 15.0, w + 10.0, 30.0), act, enabled: true });
+
+        // Mark: soft red bloom and a thin ring that fade in.
+        if k > 0.0 {
+            self.p.glow(ir.inset(1.0), 5.0 + 5.0 * k, GLORIA_RED.alpha(0.75 * k));
+        }
+        match &self.app.gloria {
+            Some(img) => {
+                let img = img.clone();
+                self.p.image(&img, ir, 4.5, 0.82 + 0.18 * k);
+            }
+            None => self.p.fill(ir, GLORIA_RED),
+        }
+        if k > 0.0 {
+            self.p.border(ir.inset(-2.0), GLORIA_RED_HI.alpha(0.55 * k));
+        }
+
+        // Text: host dims, org brightens to white.
+        let ty = cy - self.lh(f) / 2.0;
+        self.p.label(f, host, tx, ty, mix(FAINT, MUTED, k));
+        self.p.label(f, org, tx + hw, ty, mix(DIM, WHITE, k));
+
+        // Underline sweeping in from the left, with a glow.
+        let uy = (cy + self.lh(f) / 2.0 + 1.0).round();
+        let uw = (hw + ow) * k;
+        if uw > 0.5 {
+            let ur = rect(tx, uy, uw, 1.0);
+            self.p.glow(ur, 3.0, GLORIA_RED.alpha(0.9 * k));
+            self.p.linear(ur, &[Stop(0.0, GLORIA_RED_HI.alpha(k)), Stop(1.0, GLORIA_RED.alpha(k))]);
+        }
+
+        // Arrow sliding out to the upper right.
+        if k > 0.0 {
+            let ax = tx + hw + ow + 5.0 - 4.0 * (1.0 - k);
+            let ay = cy - arrow / 2.0 + 2.0 * (1.0 - k);
+            self.p.icon("external", ax, ay, arrow, 2.4, GLORIA_RED_HI.alpha(k));
+        }
+
+        if self.inp.focus == Some(act) {
+            self.p.border(rect(x - 5.0, cy - 15.0, w + 10.0, 30.0), self.a.alpha(0.8));
+        }
+        w
     }
 
     /// Checkbox with a label that wraps in `w`. Returns the bottom.

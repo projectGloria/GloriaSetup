@@ -58,6 +58,9 @@ GloriaLauncher (sibling repo, read only, never edit it) finds apps through
 - **GloriaSetup brand icon** (`assets/brand/GloriaSetup.ico`) appears only on the bare stub, previews,
   `gloria-pack.exe`, and `--allow-default-icon` test builds (which show a TEST BUILD badge). Never on a real
   installer. The small credit image on the done screens is embedded data, not an icon resource, and is fine.
+- **Footer link:** every page's footer starts with `assets/brand/GloriaRed.ico` (embedded data, copied from
+  GloriaLauncher) + `github.com/ProjectGloria`, which opens https://github.com/ProjectGloria (`Act::OpenGithub`).
+  Left footer buttons follow it; the done screens' credit sits just above the footer.
 - `assets/brand/*` stay byte-for-byte unchanged. The PNG is for docs only, never a source for icons.
 
 ## Payload and signing order
