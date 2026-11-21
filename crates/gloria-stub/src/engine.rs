@@ -12,6 +12,7 @@ use std::time::Duration;
 use gloria_core::archive::{self, safe_rel_path, FileEntry};
 use gloria_core::exit::Exit;
 use gloria_core::install_manifest::{self, plan_removal, InstallManifest, Options, Removal};
+use gloria_core::journal::{self, Recovered};
 use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, WORK_DIR};
 use gloria_core::paths::{self, is_within, norm, parse_data_folder, PathProblem, SystemDirs};
 use gloria_core::payload::{self, Payload};
@@ -33,7 +34,7 @@ impl Fail {
         f
     }
     fn io(e: &io::Error, what: &str) -> Fail {
-        match e.raw_os_error() {
+        match journal::os_code(e) {
             // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_ACCESS_DENIED (a running exe can't be renamed over)
             Some(32) | Some(33) | Some(5) => Fail::new(Exit::FilesLocked, format!("err.reasonV|{what}: {e}")),
             // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
@@ -109,7 +110,8 @@ pub fn resolve_dir(app: &AppManifest, raw: &Path) -> Result<PathBuf, PathProblem
     let sys = SystemDirs::from_env(crate::app::env);
     let data = data_folders(app, &[]);
     paths::check_install_dir(raw, &sys, &data)?;
-    let ours = InstallManifest::load(raw).map(|m| m.app_id == app.id).unwrap_or(false);
+    // Ours: our install manifest, or the journal of an install of ours that was cut short.
+    let ours = InstallManifest::load(raw).map(|m| m.app_id == app.id).unwrap_or(false) || journal::owner(raw).as_deref() == Some(app.id.as_str());
     let non_empty = fs::read_dir(raw).map(|mut d| d.next().is_some()).unwrap_or(false);
     let dir = if non_empty && !ours { raw.join(paths::sanitize_file_name(&app.name)) } else { raw.to_path_buf() };
     paths::check_install_dir(&dir, &sys, &data)?;
@@ -149,25 +151,6 @@ pub struct Request {
     pub dry_run: bool,
     /// Force-close the app if it does not close by itself (silent mode, or after the user chose Force close).
     pub force_close: bool,
-}
-
-enum Op {
-    /// An existing file moved to the backup folder: (original, backup).
-    Backup(PathBuf, PathBuf),
-    /// A staged file moved into place: (final, staged).
-    Place(PathBuf, PathBuf),
-}
-
-fn rollback(ops: &mut Vec<Op>) {
-    while let Some(op) = ops.pop() {
-        let (from, to) = match &op {
-            Op::Place(dest, staged) => (dest, staged),
-            Op::Backup(orig, bak) => (bak, orig),
-        };
-        if let Err(e) = fs::rename(from, to) {
-            log!("rollback: {} -> {}: {e}", from.display(), to.display());
-        }
-    }
 }
 
 fn set_hidden(p: &Path) {
@@ -246,15 +229,15 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         }
     }
 
+    // An earlier run that died mid-commit left a journal: put the previous version back first.
+    recover(dir)?;
+    let prev = InstallManifest::load(dir).ok().filter(|m| m.app_id == app.id);
+
     let created_dir = !dir.exists();
     fs::create_dir_all(dir).map_err(|e| Fail::new(Exit::InvalidArgs, format!("options.errWrite|{}: {e}", dir.display())))?;
     let work = dir.join(WORK_DIR);
-    if work.exists() {
-        log!("removing a stale {}", work.display());
-        let _ = install_manifest::remove_tree_no_follow(&work, false, &mut |_| {});
-    }
-    let staging = work.join("staging");
-    let backup = work.join("backup");
+    let staging = work.join(journal::STAGING);
+    // Only for failures before the journal exists; after that, `journal::recover` undoes everything.
     let fail_clean = |f: Fail| -> Fail {
         let _ = install_manifest::remove_tree_no_follow(&work, false, &mut |_| {});
         if created_dir {
@@ -290,57 +273,80 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         return Err(fail_clean(Fail::cancelled()));
     }
 
-    // 2. Commit: back up what is replaced or obsolete, move staged files in. Any failure undoes every rename.
+    // The new install manifest is staged too, so it is swapped in (and rolled back) with the files it lists.
     let new_dirs = InstallManifest::dirs_for(&entries);
-    let existed: Vec<bool> = new_dirs.iter().map(|d| dir.join(d).exists()).collect();
-    let mut ops: Vec<Op> = Vec::new();
-    let commit = (|| -> io::Result<()> {
-        let n = entries.len().max(1);
-        for (i, e) in entries.iter().enumerate() {
-            let rel = safe_rel_path(&e.path).ok_or_else(|| io::Error::other("unsafe path"))?;
-            let dest = dir.join(&rel);
-            if fs::symlink_metadata(&dest).is_ok() {
-                let bak = backup.join(&rel);
-                fs::create_dir_all(bak.parent().unwrap())?;
-                fs::rename(&dest, &bak).map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", dest.display())))?;
-                ops.push(Op::Backup(dest.clone(), bak));
-            }
-            if let Some(parent) = dest.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let from = staging.join(&rel);
-            fs::rename(&from, &dest).map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", dest.display())))?;
-            ops.push(Op::Place(dest, from));
-            progress(70.0 + 8.0 * (i + 1) as f32 / n as f32, "");
-        }
-        if let Some(p) = &prev {
-            for old in p.files.iter().filter(|o| !entries.iter().any(|n| n.path.eq_ignore_ascii_case(&o.path))) {
-                let Some(rel) = safe_rel_path(&old.path) else { continue };
-                let orig = dir.join(&rel);
-                if fs::symlink_metadata(&orig).is_ok() {
-                    let bak = backup.join(&rel);
-                    fs::create_dir_all(bak.parent().unwrap())?;
-                    fs::rename(&orig, &bak)?;
-                    log!("removed obsolete {}", orig.display());
-                    ops.push(Op::Backup(orig, bak));
-                }
-            }
-        }
-        Ok(())
-    })();
-    if let Err(e) = commit {
-        rollback(&mut ops);
-        return Err(fail_clean(Fail::io(&e, "replace")));
-    }
-
-    // Directories: new ones we created, plus ones a previous install of ours created.
     let prev_dirs: Vec<String> = prev.as_ref().map(|p| p.dirs.clone()).unwrap_or_default();
+    // Directories: new ones we create, plus ones a previous install of ours created.
     let dirs: Vec<String> = new_dirs
         .iter()
-        .zip(&existed)
-        .filter(|(d, ex)| !**ex || prev_dirs.iter().any(|p| p.eq_ignore_ascii_case(d)))
-        .map(|(d, _)| d.clone())
+        .filter(|d| !dir.join(d).exists() || prev_dirs.iter().any(|p| p.eq_ignore_ascii_case(d)))
+        .cloned()
         .collect();
+    let (start, desk) = shortcut_paths(app);
+    let mut want = vec![start];
+    if req.desktop {
+        want.push(desk);
+    }
+    let want: Vec<PathBuf> = want.into_iter().flatten().collect();
+    let obsolete: Vec<String> = prev
+        .iter()
+        .flat_map(|p| &p.files)
+        .filter(|o| !entries.iter().any(|n| n.path.eq_ignore_ascii_case(&o.path)))
+        .filter(|o| safe_rel_path(&o.path).is_some())
+        .map(|o| o.path.clone())
+        .collect();
+    let mut m = InstallManifest {
+        schema: install_manifest::SCHEMA,
+        app_id: app.id.clone(),
+        name: app.name.clone(),
+        version: app.parsed_version().to_string(),
+        installed_at: now_unix(),
+        gloria_setup: gloria_core::GLORIA_SETUP_VERSION.into(),
+        files: entries,
+        dirs,
+        created_install_dir: created_dir || prev.as_ref().is_some_and(|p| p.created_install_dir),
+        shortcuts: want.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
+        options: Options { desktop_shortcut: req.desktop },
+        data_folders: app.data_folders.clone(),
+    };
+    m.save(&staging).map_err(|e| fail_clean(Fail::io(&e, INSTALL_MANIFEST_NAME)))?;
+    let mut places: Vec<String> = m.files.iter().map(|e| e.path.clone()).collect();
+    places.push(INSTALL_MANIFEST_NAME.into());
+
+    // 2. Commit: the journal goes to disk, then every rename. Old files go to `.gloria\backup`.
+    let commit = journal::Commit::begin(dir, &app.id, places, obsolete.clone(), created_dir).map_err(|e| fail_clean(Fail::io(&e, "journal")))?;
+    let n = commit.len().max(1);
+    let applied = commit.apply(|i| {
+        crash_point(i);
+        progress(70.0 + 8.0 * i as f32 / n as f32, "");
+        true
+    });
+    let undo = |f: Fail| -> Fail {
+        match journal::recover(dir) {
+            Ok(_) => log!("rolled back; the previous version is unchanged"),
+            Err(e) => log!("rollback incomplete ({e}); the next run of this setup finishes it"),
+        }
+        f
+    };
+    if let Err(e) = applied {
+        return Err(undo(Fail::io(&e, "replace")));
+    }
+    crash_point(commit.len());
+    for o in &obsolete {
+        log!("removed obsolete {}", dir.join(o).display());
+    }
+
+    // 3. Register, then delete the journal: the commit point.
+    progress(80.0, "");
+    let values = registry::uninstall_values(app, dir, m.total_size(), gloria_core::GLORIA_SETUP_VERSION);
+    if let Err(e) = sys::reg_write(&app.uninstall_key(), &values) {
+        return Err(undo(Fail::new(Exit::Error, format!("registry: {e}"))));
+    }
+    log!("registered HKCU\\{}\\{}", registry::UNINSTALL_ROOT, app.uninstall_key());
+    crash_point(commit.len() + 1);
+    commit.finish().map_err(|e| undo(Fail::io(&e, "journal")))?;
+    log!("committed");
+
     let mut gone: Vec<&String> = prev_dirs.iter().filter(|d| !new_dirs.iter().any(|n| n.eq_ignore_ascii_case(d))).collect();
     gone.sort_by_key(|d| std::cmp::Reverse(d.matches('\\').count()));
     for d in gone {
@@ -349,17 +355,12 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         }
     }
 
-    // 3. Shortcuts.
-    progress(80.0, "");
+    // 4. Shortcuts (after the commit: a failed shortcut is logged, never a reason to roll back).
+    progress(85.0, "");
     let exe = dir.join(app.main_exe_rel());
-    let (start, desk) = shortcut_paths(app);
     let mut shortcuts = Vec::new();
-    let mut want = vec![start];
-    if req.desktop {
-        want.push(desk);
-    }
-    for lnk in want.into_iter().flatten() {
-        match sys::create_shortcut(&lnk, &exe, app.app_user_model_id.as_deref(), &app.name) {
+    for lnk in &want {
+        match sys::create_shortcut(lnk, &exe, app.app_user_model_id.as_deref(), &app.name) {
             Ok(()) => {
                 log!("shortcut {}", lnk.display());
                 shortcuts.push(lnk.to_string_lossy().into_owned());
@@ -376,42 +377,52 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
             }
         }
     }
+    if shortcuts.len() != m.shortcuts.len() {
+        m.shortcuts = shortcuts;
+        if let Err(e) = m.save(dir) {
+            log!("{INSTALL_MANIFEST_NAME}: {e}");
+        }
+    }
 
-    // 4. Finalize.
-    progress(90.0, "");
-    let m = InstallManifest {
-        schema: install_manifest::SCHEMA,
-        app_id: app.id.clone(),
-        name: app.name.clone(),
-        version: app.parsed_version().to_string(),
-        installed_at: now_unix(),
-        gloria_setup: gloria_core::GLORIA_SETUP_VERSION.into(),
-        files: entries,
-        dirs,
-        created_install_dir: created_dir || prev.as_ref().is_some_and(|p| p.created_install_dir),
-        shortcuts,
-        options: Options { desktop_shortcut: req.desktop },
-        data_folders: app.data_folders.clone(),
-    };
-    if let Err(e) = m.save(dir) {
-        rollback(&mut ops);
-        return Err(fail_clean(Fail::io(&e, "install-manifest.json")));
-    }
-    let values = registry::uninstall_values(app, dir, m.total_size(), gloria_core::GLORIA_SETUP_VERSION);
-    if let Err(e) = sys::reg_write(&app.uninstall_key(), &values) {
-        return Err(fail_clean(Fail::new(Exit::Error, format!("registry: {e}"))));
-    }
-    log!("registered HKCU\\{}\\{}", registry::UNINSTALL_ROOT, app.uninstall_key());
+    // 5. Finalize.
     if req.purge {
         progress(95.0, "");
         remove_data(app, &m.data_folders, dir, false);
     }
-    let _ = install_manifest::remove_tree_no_follow(&work, false, &mut |_| {});
     sys::notify_shell();
     progress(100.0, "");
     log!("install done");
     Ok(())
 }
+
+/// Undoes an install that died mid-commit (see `gloria_core::journal`). A failure here stops the run: the backups
+/// stay where they are for the next attempt.
+fn recover(dir: &Path) -> Result<(), Fail> {
+    match journal::recover(dir) {
+        Ok(Recovered::Nothing) => Ok(()),
+        Ok(Recovered::Cleaned) => {
+            log!("removed a leftover {}", dir.join(WORK_DIR).display());
+            Ok(())
+        }
+        Ok(Recovered::RolledBack) => {
+            log!("an earlier install into {} was interrupted; rolled it back", dir.display());
+            Ok(())
+        }
+        Err(e) => Err(Fail::io(&e, "recover an interrupted install")),
+    }
+}
+
+/// Debug builds only: `GLORIA_TEST_CRASH_AT=<n>` ends the process right before commit step `n`, to test recovery.
+/// Steps `0..len` are the renames, `len` is the registry write, `len + 1` is deleting the journal.
+fn crash_point(i: usize) {
+    #[cfg(debug_assertions)]
+    if std::env::var("GLORIA_TEST_CRASH_AT").ok().and_then(|v| v.parse::<usize>().ok()) == Some(i) {
+        log!("GLORIA_TEST_CRASH_AT={i}: exiting without cleanup");
+        std::process::exit(99);
+    }
+    let _ = i;
+}
+
 
 /// Removes the declared data folders (never one that overlaps the install folder). Errors are logged, not fatal.
 fn remove_data(app: &AppManifest, recorded: &[String], install_dir: &Path, dry_run: bool) {
@@ -451,10 +462,14 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
     if !paths::is_local_absolute(dir) {
         return Err(Fail::new(Exit::InvalidArgs, format!("not an absolute folder: {}", dir.display())));
     }
-    let m = InstallManifest::load(dir).map_err(|e| Fail::new(Exit::Error, format!("{}: {e}", dir.join(INSTALL_MANIFEST_NAME).display())))?;
-    if m.app_id != app.id {
-        return Err(Fail::new(Exit::Error, format!("{} belongs to {:?}, not {:?}", dir.display(), m.app_id, app.id)));
-    }
+    let load = || -> Result<InstallManifest, Fail> {
+        let m = InstallManifest::load(dir).map_err(|e| Fail::new(Exit::Error, format!("{}: {e}", dir.join(INSTALL_MANIFEST_NAME).display())))?;
+        if m.app_id != app.id {
+            return Err(Fail::new(Exit::Error, format!("{} belongs to {:?}, not {:?}", dir.display(), m.app_id, app.id)));
+        }
+        Ok(m)
+    };
+    let mut m = load()?;
     let key = app.uninstall_key();
     let reg_dir = sys::reg_read(&key, "InstallLocation");
     let ours = reg_dir.as_deref().map(|r| norm(Path::new(r)) == norm(dir)).unwrap_or(true);
@@ -464,6 +479,9 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
         if !left.is_empty() {
             return Err(Fail::new(Exit::FilesLocked, "err.reasonV"));
         }
+        // An interrupted update: restore the version the manifest on disk describes before removing it.
+        recover(dir)?;
+        m = load()?;
     }
     progress(10.0, "");
 

@@ -176,9 +176,22 @@ pub fn image_path(pid: u32) -> Option<PathBuf> {
     }
 }
 
+/// `dir` as the file system resolves it, without the `\\?\` prefix: junctions, 8.3 names and the AppData
+/// redirection Windows applies to children of packaged (MSIX) apps are undone. Process image paths come back in
+/// this form, so a plain string compare with the folder we were given can miss a running app.
+fn final_path(dir: &Path) -> Option<PathBuf> {
+    let p = std::fs::canonicalize(dir).ok()?;
+    let s = p.to_string_lossy();
+    Some(match s.strip_prefix(r"\\?\UNC\") {
+        Some(r) => PathBuf::from(format!(r"\\{r}")),
+        None => PathBuf::from(s.strip_prefix(r"\\?\").unwrap_or(&s)),
+    })
+}
+
 /// Processes whose image is inside `dir` (never this process). `skip` drops extra pids (the uninstaller we wait for).
 pub fn processes_in(dir: &Path, skip: Option<u32>) -> Vec<(u32, PathBuf)> {
     let me = unsafe { GetCurrentProcessId() };
+    let dirs: Vec<PathBuf> = std::iter::once(dir.to_path_buf()).chain(final_path(dir)).collect();
     let mut out = Vec::new();
     unsafe {
         let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return out };
@@ -188,7 +201,7 @@ pub fn processes_in(dir: &Path, skip: Option<u32>) -> Vec<(u32, PathBuf)> {
             let pid = e.th32ProcessID;
             if pid != me && Some(pid) != skip && pid != 0 {
                 if let Some(p) = image_path(pid) {
-                    if is_within(&p, dir) && norm(&p) != norm(dir) {
+                    if dirs.iter().any(|d| is_within(&p, d) && norm(&p) != norm(d)) {
                         out.push((pid, p));
                     }
                 }
@@ -307,4 +320,29 @@ pub fn current_pid() -> u32 {
 pub fn rand_suffix() -> String {
     let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
     format!("{:08x}", (t.as_nanos() as u64 ^ (current_pid() as u64).rotate_left(17)) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_and_closes_processes_in_a_folder() {
+        let dir = std::env::temp_dir().join(format!("gloria-sys-procs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("pinger.exe");
+        let sys32 = std::env::var("SystemRoot").unwrap() + r"\System32\PING.EXE";
+        std::fs::copy(sys32, &exe).unwrap();
+        let mut child = std::process::Command::new(&exe).args(["-n", "60", "127.0.0.1"]).creation_flags(CREATE_NO_WINDOW).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        eprintln!("image of child: {:?}", image_path(child.id()));
+        let found = processes_in(&dir, None);
+        assert!(found.iter().any(|(pid, _)| *pid == child.id()), "{found:?}");
+        // No window to ask: force-closing ends it.
+        let left = close_apps(&dir, None, Duration::from_millis(400), true);
+        assert!(left.is_empty(), "{left:?}");
+        assert!(child.wait().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

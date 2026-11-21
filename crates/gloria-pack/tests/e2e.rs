@@ -139,6 +139,44 @@ impl TestApp {
         std::thread::sleep(Duration::from_millis(300));
         code
     }
+
+    /// Everything this app's setups and uninstallers logged in this test run.
+    fn logs(&self) -> String {
+        let mut out = String::new();
+        for e in std::fs::read_dir(std::env::temp_dir()).unwrap().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with(&format!("GloriaSetup-{}-", self.id)) && n.ends_with(".log") {
+                out += &std::fs::read_to_string(e.path()).unwrap_or_default();
+            }
+        }
+        out
+    }
+
+    fn version(&self) -> String {
+        std::fs::read_to_string(self.install.join("version.txt")).unwrap()
+    }
+
+    /// Starts the installed dummy in a test mode; the guard kills it if the test fails first.
+    fn start(&self, mode: &str) -> Running {
+        let c = Command::new(self.install.join("dummy.exe")).arg(mode).spawn().unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        Running(c)
+    }
+}
+
+struct Running(std::process::Child);
+
+impl Running {
+    fn exited(&mut self) -> bool {
+        self.0.try_wait().unwrap().is_some()
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 impl Drop for TestApp {
@@ -147,13 +185,33 @@ impl Drop for TestApp {
         let _ = std::fs::remove_file(self.lnk());
         let _ = std::fs::remove_dir_all(&self.data);
         let _ = std::fs::remove_dir_all(&self.work);
+        for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if n.starts_with(&format!("GloriaSetup-{}-", self.id)) && n.ends_with(".log") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
     }
 }
 
 fn run(exe: &Path, args: &[&str]) -> i32 {
+    run_env(exe, args, &[])
+}
+
+fn run_env(exe: &Path, args: &[&str], env: &[(&str, &str)]) -> i32 {
     // Built as one raw command line so `/D=` stays unquoted, like NSIS expects.
     use std::os::windows::process::CommandExt;
-    Command::new(exe).raw_arg(args.join(" ")).status().unwrap().code().unwrap()
+    let mut c = Command::new(exe);
+    c.raw_arg(args.join(" "));
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.status().unwrap().code().unwrap()
+}
+
+/// `files` without the `.gloria` work folder.
+fn app_files(dir: &Path) -> Vec<String> {
+    files(dir).into_iter().filter(|f| !f.starts_with(".gloria")).collect()
 }
 
 fn files(dir: &Path) -> Vec<String> {
@@ -281,9 +339,6 @@ fn install_update_reinstall_downgrade_uninstall() {
     assert!(t.install.join("old-notes.txt").exists());
     assert!(t.data.exists(), "a downgrade without /PURGE keeps data");
 
-    // A file locked by a running copy of the app: silent mode closes it.
-    // (Covered by the engine's close_apps; not exercised here to keep the test free of windows.)
-
     // Silent uninstall keeps data and unrelated files, removes exactly what it installed.
     assert_eq!(t.uninstall(&["/S"]), 0);
     assert_eq!(files(&t.install), ["user-notes.txt"]);
@@ -337,4 +392,131 @@ fn spaces_in_unquoted_install_dir() {
         assert!(t0.elapsed() < Duration::from_secs(60));
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+// ───────────────────────────── interrupted installs, running apps, locked files ─────────────────────────────
+
+/// The update from 0.1.0 to 0.2.0 has 6 renames: 4 files and the install manifest placed (0..=4), 1 obsolete file
+/// moved away (5). Then come the registry write (6) and deleting the journal (7). A debug stub exits with 99 at
+/// `GLORIA_TEST_CRASH_AT`. Each crash must leave a journal that the next run rolls back exactly.
+#[test]
+fn update_killed_mid_commit_is_rolled_back_by_the_next_run() {
+    let t = TestApp::new("Crash");
+    let s1 = t.pack("0.1.0", "dummy-a.ico");
+    let s2 = t.pack("0.2.0", "dummy-b.ico");
+    let d = t.install.to_string_lossy().into_owned();
+    assert_eq!(run(&s1, &["/S", &format!("/D={d}")]), 0);
+    std::fs::write(t.install.join("user-notes.txt"), "not ours").unwrap();
+    let before = app_files(&t.install);
+    let manifest = std::fs::read(t.install.join("install-manifest.json")).unwrap();
+
+    for at in ["0", "3", "5", "6", "7"] {
+        assert_eq!(run_env(&s2, &["/S"], &[("GLORIA_TEST_CRASH_AT", at)]), 99, "crash at {at}");
+        assert!(t.install.join(r".gloria\journal").exists(), "crash at {at} left no journal");
+        // The next run recovers first. Stopping it before its own first rename shows the folder as recovery left it.
+        assert_eq!(run_env(&s2, &["/S"], &[("GLORIA_TEST_CRASH_AT", "0")]), 99, "probe after {at}");
+        assert_eq!(app_files(&t.install), before, "crash at {at}");
+        assert_eq!(t.version(), "0.1.0", "crash at {at}");
+        assert_eq!(std::fs::read(t.install.join("install-manifest.json")).unwrap(), manifest, "crash at {at}");
+    }
+    assert!(t.logs().contains("was interrupted; rolled it back"));
+
+    // A normal run recovers and updates.
+    assert_eq!(run(&s2, &["/S"]), 0);
+    assert_eq!(app_files(&t.install), ["docs\\readme.txt", "dummy.exe", "install-manifest.json", "uninstall.exe", "user-notes.txt", "version.txt"]);
+    assert!(!t.install.join(".gloria").exists());
+    assert_eq!(t.version(), "0.2.0");
+    assert_eq!(t.reg("DisplayVersion").as_deref(), Some("0.2.0"));
+
+    // The uninstaller also recovers first: an interrupted reinstall, then uninstall, leaves only the user's file.
+    assert_eq!(run_env(&s2, &["/S"], &[("GLORIA_TEST_CRASH_AT", "3")]), 99);
+    assert_eq!(t.uninstall(&["/S"]), 0);
+    assert_eq!(files(&t.install), ["user-notes.txt"]);
+}
+
+#[test]
+fn fresh_install_killed_mid_commit_is_cleaned_up_by_the_next_run() {
+    let t = TestApp::new("CrashFresh");
+    let s1 = t.pack("0.1.0", "dummy-a.ico");
+    let d = t.install.to_string_lossy().into_owned();
+    assert_eq!(run_env(&s1, &["/S", &format!("/D={d}")], &[("GLORIA_TEST_CRASH_AT", "2")]), 99);
+    assert!(t.install.join(r".gloria\journal").exists());
+    assert!(!t.has_key());
+    // Same folder again: the half-done install is ours, so setup must not append \<Name>.
+    assert_eq!(run(&s1, &["/S", &format!("/D={d}")]), 0);
+    assert_eq!(files(&t.install), ["docs\\readme.txt", "dummy.exe", "install-manifest.json", "old-notes.txt", "uninstall.exe", "version.txt"]);
+    assert_eq!(t.reg("InstallLocation").as_deref(), Some(d.as_str()));
+}
+
+#[test]
+fn silent_update_closes_the_running_app() {
+    let t = TestApp::new("Close");
+    let s1 = t.pack("0.1.0", "dummy-a.ico");
+    let s2 = t.pack("0.2.0", "dummy-b.ico");
+    let d = t.install.to_string_lossy().into_owned();
+    assert_eq!(run(&s1, &["/S", &format!("/D={d}")]), 0);
+
+    // An app that closes when asked: no force needed.
+    let mut app = t.start("--hold");
+    assert!(!app.exited());
+    assert_eq!(run(&s2, &["/S"]), 0);
+    assert!(app.exited(), "the app was not closed: {}", t.logs());
+    assert_eq!(t.version(), "0.2.0");
+    assert!(t.logs().contains("running: "));
+    assert!(!t.logs().contains("force-closing"), "a polite app was force-closed");
+
+    // An app that ignores the request: silent mode force-closes it after the grace period.
+    let mut app = t.start("--stubborn");
+    assert!(!app.exited());
+    assert_eq!(run(&s2, &["/S"]), 0);
+    assert!(app.exited(), "the stubborn app was not force-closed");
+    assert!(t.logs().contains("force-closing"));
+}
+
+#[test]
+fn locked_file_fails_with_3_and_keeps_the_old_version() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let t = TestApp::new("Locked");
+    let s1 = t.pack("0.1.0", "dummy-a.ico");
+    let s2 = t.pack("0.2.0", "dummy-b.ico");
+    let d = t.install.to_string_lossy().into_owned();
+    assert_eq!(run(&s1, &["/S", &format!("/D={d}")]), 0);
+    let before = files(&t.install);
+    let manifest = std::fs::read(t.install.join("install-manifest.json")).unwrap();
+
+    // Another program holds version.txt open with no sharing. It can't be moved, so the update must roll back.
+    let lock = std::fs::OpenOptions::new().read(true).share_mode(0).open(t.install.join("version.txt")).unwrap();
+    assert_eq!(run(&s2, &["/S"]), 3);
+    drop(lock);
+    assert_eq!(files(&t.install), before, "no .gloria left, nothing half-replaced");
+    assert_eq!(t.version(), "0.1.0");
+    assert_eq!(std::fs::read(t.install.join("install-manifest.json")).unwrap(), manifest);
+    assert_eq!(t.reg("DisplayVersion").as_deref(), Some("0.1.0"));
+    assert!(t.logs().contains("rolled back; the previous version is unchanged"));
+
+    assert_eq!(run(&s2, &["/S"]), 0);
+    assert_eq!(t.version(), "0.2.0");
+}
+
+#[test]
+fn relaunch_starts_the_app_only_when_asked() {
+    let t = TestApp::new("Relaunch");
+    let s1 = t.pack("0.1.0", "dummy-a.ico");
+    let d = t.install.to_string_lossy().into_owned();
+    let data = t.data.to_string_lossy().into_owned();
+    // The dummy inherits these: it writes its settings into the test's data folder and shows no window.
+    let env = [("GLORIA_DUMMY_DATA", data.as_str()), ("GLORIA_DUMMY_QUIET", "1")];
+    let settings = t.data.join("settings.json");
+
+    assert_eq!(run_env(&s1, &["/S", &format!("/D={d}")], &env), 0);
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!settings.exists(), "started without /RELAUNCH");
+
+    assert_eq!(run_env(&s1, &["/S", "/RELAUNCH"], &env), 0);
+    let t0 = Instant::now();
+    while !settings.exists() {
+        assert!(t0.elapsed() < Duration::from_secs(20), "/RELAUNCH did not start the app");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    assert!(std::fs::read_to_string(&settings).unwrap().contains("0.1.0"));
 }

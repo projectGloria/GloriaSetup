@@ -24,13 +24,16 @@ powershell -ExecutionPolicy Bypass -File sandbox\run.ps1           # Windows San
 ## Layout
 
 - `crates/gloria-core`: no UI. Manifest schema + validation, payload format, SemVer compare, NSIS-style CLI parser,
-  install-manifest model, path/data-folder guardrails, registry value model, exit codes.
+  install-manifest model, commit journal + crash recovery (`journal.rs`), path/data-folder guardrails, registry
+  value model, exit codes.
 - `crates/gloria-pack`: stub + app folder + `gloria.toml` → `<Name>_<version>_x64-setup.exe` (also builds the
   stripped `uninstall.exe` and puts it in the archive). `tests/e2e.rs` drives real installs.
 - `crates/gloria-stub`: the setup/uninstaller exe. `window.rs` (Win32 loop) → `app.rs` (state machine) →
   `ui.rs` (immediate-mode Direct2D drawing via `gfx.rs`). `real.rs` wires the UI and silent mode to `engine.rs`
   (install/uninstall/trampoline). `shot.rs` renders PNGs. Strings in `i18n/*.toml` (all four must have every key).
-- `examples/dummy`: test app + two icons + `pack.ps1`. `sandbox/`: Windows Sandbox config.
+- `examples/dummy`: test app + two icons + `pack.ps1`. Test modes: `--hold` (window, closes when asked),
+  `--stubborn` (ignores close, must be force-closed), `--quiet` / `GLORIA_DUMMY_QUIET=1`, `GLORIA_DUMMY_DATA=<dir>`.
+  `sandbox/`: Windows Sandbox config.
 
 ## GloriaLauncher contract (do not change values)
 
@@ -74,11 +77,16 @@ security directory, so Authenticode signing doesn't break it. The uninstaller pa
   with a hidden `cmd ping & del` (MoveFileEx delay-until-reboot needs admin).
 - Exit codes: 0 ok, 1 error, 2 downgrade refused, 3 files locked / app won't close, 4 UAC (legacy migration),
   5 WebView2, 6 bad args or path.
-- Installs stage into `<dir>\.gloria\staging`, then commit with backup renames and roll back on failure.
+- Installs stage into `<dir>\.gloria\staging`, write `.gloria\journal`, rename-commit with backups in
+  `.gloria\backup`, write the registry, then delete the journal (the commit point). Any later setup or uninstall run
+  rolls back a journal it finds before doing anything else. `.gloria` without a journal is just deleted.
+- Debug stubs only: `GLORIA_TEST_CRASH_AT=<n>` exits 99 at commit step n (renames, then registry, then journal delete).
+- Running apps are found by image path, compared with both the given folder and its resolved final path (children of
+  packaged apps such as this desktop app see a redirected `%LOCALAPPDATA%`). Silent mode force-closes after a grace.
 
 ## Conventions
 
 - Rust 1.80+, x64, `windows` crate 0.62. Strictly per-user; nothing may need admin (except the opt-in legacy
-  HKLM migration in M2).
+  HKLM migration in M3).
 - Commit messages: one plain sentence saying what changed and why. No `feat:`/`fix:` prefixes.
 - Examples and docs use `C:\Users\you`, never a real user name.

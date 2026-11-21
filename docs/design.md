@@ -155,13 +155,28 @@ removed only if empty after their tracked files are gone.
 ### Atomic replacement
 All work happens in `<install>\.gloria\` (hidden, same volume, so renames are atomic):
 
-1. **Stage:** extract the whole archive to `.gloria\staging`. Disk-full / AV lock here → delete staging, nothing changed.
-2. **Commit:** for each old tracked file being replaced or removed: rename into `.gloria\backup`; then rename each
-   staged file to its final place. Every step is appended to `.gloria\journal.json` before it happens.
-3. **Rollback** on any failure: replay the journal backwards (move new files out, move backups back).
-4. **Finalize:** write the new `install-manifest.json`, shortcuts, registry; delete backup and journal.
+1. **Stage:** extract the whole archive to `.gloria\staging`, plus the new `install-manifest.json`. Disk-full / AV
+   lock here → delete `.gloria`, nothing changed.
+2. **Journal:** write `.gloria\journal` (flushed to disk) before the first rename. It is a small text file: a
+   `GLORIA-JOURNAL 1` header, the app id (`A`), whether the install folder is new (`N`), new parent folders (`D`),
+   every file to place (`P`, including `install-manifest.json`) and every obsolete file (`O`). Code:
+   `gloria-core::journal`.
+3. **Commit:** for each file to place, rename the old one (if any) into `.gloria\backup`, then rename the staged one
+   into place. Then rename each obsolete file into `.gloria\backup`. Then write the registry.
+4. **Finalize:** delete the journal (this is the commit point), then `.gloria`, then shortcuts and the data purge.
+5. **Rollback** on any failure before the commit point, in this run or the next: in reverse, an obsolete file whose
+   original is missing comes back from backup; a placed file goes back to staging and its backup goes back into
+   place; new folders are removed. The journal is deleted last, so a crash during rollback just rolls back again.
+   Which step a file reached is read from which files exist, so the journal never needs rewriting.
 
-A journal left by a crash is rolled back automatically on the next run before anything else.
+Every setup and uninstaller run checks for a journal before doing anything else (after closing the app). A journal
+names its app id, so a half-done fresh install is still recognised as "ours" and not treated as a foreign folder.
+`.gloria` without a journal is leftover work and is deleted, never restored from. Known gap: a crash between the
+registry write and deleting the journal rolls the files back but leaves the registry one version ahead until the
+next setup run rewrites it.
+
+Debug builds of the stub exit with code 99 just before rename `n` when `GLORIA_TEST_CRASH_AT=n` is set (`n = renames`
+is the registry write, `renames + 1` deleting the journal). The e2e tests use it to kill an update at each step.
 
 ### Shortcuts
 Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\<Name>.lnk`) always; desktop optional. Both target the
@@ -328,7 +343,8 @@ exists; the stub stays "clean" (no self-modification, no network, no packed/encr
    stripped self-deleting `uninstall.exe` with the data question, `/S` + `/PURGE`, exit codes, `--dry-run`,
    `sandbox/GloriaSetup.wsb`, `AGENTS.md`, automated tests.
 2. **Existing installs.** Update (obsolete-file removal), reinstall, downgrade, process closing, full rollback journal,
-   remaining silent-mode rules and tests.
+   remaining silent-mode rules and tests. Done: crash recovery at every commit step, closing a running app (asked
+   first, forced in silent mode), locked files (exit 3, old version kept), `/RELAUNCH`.
 3. **Migration + WebView2.** Legacy NSIS / MSI / Inno detection in both registry views, elevation, data backup and
    restore, bundled WebView2 bootstrapper.
 4. **CI + polish.** Composite action, optional signing, README "How to test", social preview image.
