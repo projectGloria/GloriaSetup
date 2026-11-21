@@ -606,6 +606,26 @@ fn silent_setup_removes_an_old_install_and_keeps_the_data() {
 }
 
 #[test]
+fn a_failed_migration_keeps_the_data_and_leaves_no_backup() {
+    let t = TestApp::new("LegacyFail");
+    let old = LegacyInstall::new(&t, false);
+    // No QuietUninstallString and not NSIS: silent mode can't remove it and stops after the backup was made.
+    let o = Command::new("reg").args(["delete", &old.key, "/v", "QuietUninstallString", "/f"]).output().unwrap();
+    assert!(o.status.success());
+    t.make_data();
+    let setup = t.pack("0.1.0", "dummy-a.ico");
+    let env = [("GLORIA_TEST_NO_HKLM", "1"), ("GLORIA_DUMMY_LEGACY_KEY", old.key.as_str())];
+
+    assert_eq!(run_env(&setup, &["/S"], &env), 1);
+    assert!(old.registered() && old.dir.join("dummy.exe").exists(), "old install untouched");
+    assert!(!t.has_key(), "nothing installed");
+    assert!(t.data.join(r"sub\settings.json").exists(), "data kept");
+    assert!(t.logs().contains("backed up"), "the backup was made");
+    let tmp_backup = std::env::temp_dir().join(format!("GloriaSetup-backup-{}", t.id));
+    assert!(!tmp_backup.exists(), "backup deleted after the failure");
+}
+
+#[test]
 fn silent_setup_replaces_an_nsis_install_in_place_and_purge_drops_the_data() {
     let t = TestApp::new("LegacyNsis");
     let old = LegacyInstall::new(&t, true);

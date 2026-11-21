@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::manifest::AppManifest;
+use crate::paths::{is_local_absolute, is_within, norm};
 use crate::registry::launcher::{normalize, strip_version};
 
 /// Where an Uninstall entry was found.
@@ -112,6 +113,51 @@ pub fn msi_guid(e: &Entry) -> Option<String> {
     is_guid(g).then(|| g.to_string())
 }
 
+/// Which folders may be taken as an old install's own folder. The migration closes apps running from that folder and
+/// removes it once empty, so it must be the app's own folder: never a drive root, never inside Windows, and never
+/// a shared folder itself (`Program Files`, `%LOCALAPPDATA%`, the user profile...), only a folder inside one. An
+/// entry with no `InstallLocation` and an uninstaller like `C:\Windows\System32\msiexec.exe` or `rundll32.exe` would
+/// otherwise make System32 "the app's folder".
+#[derive(Debug, Clone, Default)]
+pub struct Guard {
+    /// May contain an app folder but never be one (nor be inside one).
+    pub shared: Vec<PathBuf>,
+    /// Nothing inside these is an app folder.
+    pub system: Vec<PathBuf>,
+}
+
+impl Guard {
+    pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Guard {
+        let get = |v: &str| env(v).filter(|x| !x.is_empty()).map(PathBuf::from);
+        let mut shared: Vec<PathBuf> = ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "PUBLIC"]
+            .iter()
+            .filter_map(|v| get(v))
+            .collect();
+        if let Some(l) = get("LOCALAPPDATA") {
+            shared.push(l.join("Programs"));
+        }
+        if let Some(u) = get("USERPROFILE") {
+            shared.extend(["Desktop", "Documents", "Downloads", r"AppData\Local\Temp"].iter().map(|x| u.join(x)));
+            if let Some(users) = u.parent() {
+                shared.push(users.to_path_buf());
+            }
+        }
+        let system = ["WINDIR", "SystemRoot"].iter().filter_map(|v| get(v)).collect();
+        Guard { shared, system }
+    }
+
+    pub fn is_app_folder(&self, p: &Path) -> bool {
+        is_local_absolute(p)
+            && p.components().count() > 2
+            && !self.system.iter().any(|s| is_within(p, s))
+            && !self.shared.iter().any(|s| is_within(s, p))
+    }
+
+    fn keep(&self, p: Option<PathBuf>) -> Option<PathBuf> {
+        p.filter(|p| self.is_app_folder(p) && !norm(p).contains("\\..\\"))
+    }
+}
+
 fn unquote(s: &str) -> PathBuf {
     PathBuf::from(s.trim().trim_matches('"').trim_end_matches('\\'))
 }
@@ -131,11 +177,15 @@ pub fn matches(app: &AppManifest, e: &Entry) -> bool {
 }
 
 /// Classifies an entry and builds its silent uninstall command. `is_nsis` checks the uninstaller exe (the stub
-/// looks for the `NullsoftInst` marker in its bytes).
-pub fn classify(e: Entry, is_nsis: &dyn Fn(&Path) -> bool) -> Found {
+/// looks for the `NullsoftInst` marker in its bytes). A folder `guard` rejects is dropped (`dir: None`).
+pub fn classify(e: Entry, is_nsis: &dyn Fn(&Path) -> bool, guard: &Guard) -> Found {
     let version = e.get("DisplayVersion").unwrap_or("").trim_start_matches(['v', 'V']).to_string();
     let uninstall = e.get("UninstallString").and_then(split_command);
-    let location = e.get("InstallLocation").map(unquote);
+    // A rejected InstallLocation isn't replaced by a guess from the uninstaller's folder.
+    let raw_location = e.get("InstallLocation").map(unquote);
+    let has_location = raw_location.is_some();
+    let location = guard.keep(raw_location);
+    let exe_dir = |x: &PathBuf| if has_location { None } else { guard.keep(x.parent().map(Path::to_path_buf)) };
     let quiet_str = e.get("QuietUninstallString").and_then(split_command).filter(|(exe, _)| exe.is_absolute());
 
     let msi = e.get("WindowsInstaller") == Some("1") || uninstall.as_ref().is_some_and(|(x, _)| x.file_name().is_some_and(|f| f.eq_ignore_ascii_case("msiexec.exe")));
@@ -148,7 +198,7 @@ pub fn classify(e: Entry, is_nsis: &dyn Fn(&Path) -> bool) -> Found {
 
     let inno = e.key.to_ascii_lowercase().ends_with("_is1") || e.get("Inno Setup: App Path").is_some();
     if inno {
-        let dir = e.get("Inno Setup: App Path").map(unquote).or(location);
+        let dir = guard.keep(e.get("Inno Setup: App Path").map(unquote)).or(location);
         let quiet = uninstall.as_ref().filter(|(x, _)| x.is_absolute()).map(|(x, _)| Command { exe: x.clone(), args: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART".into() });
         return Found { entry: e, kind: Kind::Inno, version, dir, quiet, leftover: None };
     }
@@ -156,21 +206,21 @@ pub fn classify(e: Entry, is_nsis: &dyn Fn(&Path) -> bool) -> Found {
     if let Some((x, _)) = uninstall.as_ref().filter(|(x, _)| x.is_absolute() && is_nsis(x)) {
         // `_?=` makes NSIS run in place and wait instead of copying itself to %TEMP% and returning at once. It must be
         // the last argument and unquoted.
-        let dir = location.clone().or_else(|| x.parent().map(Path::to_path_buf));
+        let dir = location.clone().or_else(|| exe_dir(x));
         if let Some(d) = &dir {
             let quiet = Some(Command { exe: x.clone(), args: format!("/S _?={}", d.display()) });
             return Found { entry: e, kind: Kind::Nsis, version, dir, quiet, leftover: Some(x.clone()) };
         }
     }
 
-    let dir = location.or_else(|| uninstall.as_ref().and_then(|(x, _)| x.parent().map(Path::to_path_buf)));
+    let dir = location.or_else(|| uninstall.as_ref().and_then(|(x, _)| exe_dir(x)));
     let quiet = quiet_str.map(|(exe, args)| Command { exe, args });
     Found { entry: e, kind: Kind::Other, version, dir, quiet, leftover: None }
 }
 
 /// Every legacy install of `app` in `entries`, per-user ones first, with duplicates (same key seen in both views)
 /// dropped.
-pub fn find(app: &AppManifest, entries: Vec<Entry>, is_nsis: &dyn Fn(&Path) -> bool) -> Vec<Found> {
+pub fn find(app: &AppManifest, entries: Vec<Entry>, is_nsis: &dyn Fn(&Path) -> bool, guard: &Guard) -> Vec<Found> {
     let mut seen: Vec<(Hive, String)> = Vec::new();
     let mut out: Vec<Found> = Vec::new();
     let mut entries: Vec<Entry> = entries.into_iter().filter(|e| matches(app, e)).collect();
@@ -181,7 +231,7 @@ pub fn find(app: &AppManifest, entries: Vec<Entry>, is_nsis: &dyn Fn(&Path) -> b
             continue;
         }
         seen.push(k);
-        out.push(classify(e, is_nsis));
+        out.push(classify(e, is_nsis, guard));
     }
     out
 }
@@ -243,7 +293,7 @@ legacy_names = ["OmniConverter"]
                 ("InstallLocation", r#""C:\Users\you\AppData\Local\Omni Convert""#),
             ],
         );
-        let f = classify(e, &|_| true);
+        let f = classify(e, &|_| true, &Guard::default());
         assert_eq!(f.kind, Kind::Nsis);
         assert_eq!(f.version, "1.4.2");
         let q = f.quiet.unwrap();
@@ -259,22 +309,22 @@ legacy_names = ["OmniConverter"]
             "x",
             &[("DisplayName", "Omni Convert"), ("UninstallString", r"C:\o\un.exe"), ("QuietUninstallString", r#""C:\o\un.exe" --silent"#)],
         );
-        let f = classify(e, &|_| false);
+        let f = classify(e, &|_| false, &Guard::default());
         assert_eq!(f.kind, Kind::Other);
         assert_eq!(f.quiet, Some(Command { exe: PathBuf::from(r"C:\o\un.exe"), args: "--silent".into() }));
         assert_eq!(f.dir, Some(PathBuf::from(r"C:\o")));
-        let none = classify(entry(Hive::User, "x", &[("DisplayName", "Omni Convert"), ("UninstallString", r"C:\o\un.exe")]), &|_| false);
+        let none = classify(entry(Hive::User, "x", &[("DisplayName", "Omni Convert"), ("UninstallString", r"C:\o\un.exe")]), &|_| false, &Guard::default());
         assert!(none.quiet.is_none());
     }
 
     #[test]
     fn msi_and_inno() {
         let g = "{12345678-1234-1234-1234-123456789ABC}";
-        let f = classify(entry(Hive::Machine, g, &[("DisplayName", "Omni Convert"), ("WindowsInstaller", "1")]), &|_| false);
+        let f = classify(entry(Hive::Machine, g, &[("DisplayName", "Omni Convert"), ("WindowsInstaller", "1")]), &|_| false, &Guard::default());
         assert_eq!(f.kind, Kind::Msi);
         assert_eq!(f.quiet.as_ref().unwrap().args, format!("/X{g} /qn /norestart"));
         assert!(f.needs_admin());
-        let f = classify(entry(Hive::User, "x", &[("UninstallString", &format!("MsiExec.exe /I{g}"))]), &|_| false);
+        let f = classify(entry(Hive::User, "x", &[("UninstallString", &format!("MsiExec.exe /I{g}"))]), &|_| false, &Guard::default());
         assert_eq!(f.kind, Kind::Msi);
 
         let f = classify(
@@ -284,10 +334,39 @@ legacy_names = ["OmniConverter"]
                 &[("UninstallString", r#""C:\o\unins000.exe""#), ("Inno Setup: App Path", r"C:\o"), ("QuietUninstallString", r#""C:\o\unins000.exe" /SILENT"#)],
             ),
             &|_| true,
+            &Guard::default(),
         );
         assert_eq!(f.kind, Kind::Inno);
         assert_eq!(f.quiet, Some(Command { exe: PathBuf::from(r"C:\o\unins000.exe"), args: "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART".into() }));
         assert_eq!(f.dir, Some(PathBuf::from(r"C:\o")));
+    }
+
+    #[test]
+    fn never_takes_a_shared_or_system_folder_as_the_app_folder() {
+        let g = Guard::from_env(|v| {
+            Some(match v {
+                "ProgramFiles" => r"C:\Program Files",
+                "LOCALAPPDATA" => r"C:\Users\you\AppData\Local",
+                "USERPROFILE" => r"C:\Users\you",
+                "WINDIR" => r"C:\Windows",
+                _ => return None,
+            })
+            .map(String::from)
+        });
+        for bad in [r"C:\", r"C:\Windows\System32", r"C:\Program Files", r"C:\Users\you", r"C:\Users", r"C:\Users\you\AppData\Local\Programs", r"C:\Users\you\Desktop", r"relative\dir"] {
+            assert!(!g.is_app_folder(Path::new(bad)), "{bad}");
+        }
+        for ok in [r"C:\Program Files\Omni Convert", r"C:\Users\you\AppData\Local\Omni Convert", r"D:\Apps\Omni"] {
+            assert!(g.is_app_folder(Path::new(ok)), "{ok}");
+        }
+        // No InstallLocation and a system uninstaller: no folder, so nothing is closed or removed there.
+        let e = entry(Hive::Machine, "x", &[("DisplayName", "Omni Convert"), ("QuietUninstallString", r#""C:\Windows\System32\reg.exe" delete X /f"#), ("UninstallString", r"C:\Windows\System32\reg.exe delete X /f")]);
+        let f = classify(e, &|_| true, &g);
+        assert_eq!(f.kind, Kind::Other, "no folder for _?=, so not run as NSIS");
+        assert_eq!(f.dir, None);
+        assert!(f.quiet.is_some());
+        let e = entry(Hive::User, "x", &[("DisplayName", "Omni Convert"), ("InstallLocation", r"C:\Users\you\AppData\Local"), ("UninstallString", r"C:\Users\you\AppData\Local\Omni\un.exe")]);
+        assert_eq!(classify(e, &|_| false, &g).dir, None, "InstallLocation rejected; the exe folder isn't guessed instead");
     }
 
     #[test]
@@ -302,7 +381,7 @@ legacy_names = ["OmniConverter"]
             entry(Hive::User, "omni", &[("DisplayName", "Omni Convert")]),
             entry(Hive::User, "Other", &[("DisplayName", "Something else")]),
         ];
-        let f = find(&a, list, &|_| false);
+        let f = find(&a, list, &|_| false, &Guard::default());
         assert_eq!(f.iter().map(|f| (f.entry.hive, f.entry.view)).collect::<Vec<_>>(), vec![(Hive::User, View::Native), (Hive::Machine, View::Native)]);
     }
 }

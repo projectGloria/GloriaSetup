@@ -488,7 +488,7 @@ fn is_nsis(exe: &Path) -> bool {
 
 /// Installs of this app made by an older installer, per-user ones first.
 pub fn detect_legacy(app: &AppManifest) -> Vec<Found> {
-    let found = legacy::find(app, sys::uninstall_entries(), &is_nsis);
+    let found = legacy::find(app, sys::uninstall_entries(), &is_nsis, &legacy::Guard::from_env(crate::app::env));
     for f in &found {
         log!(
             "legacy install: {:?}\\{} ({}, {}, version {:?}, folder {:?}, quiet: {:?})",
@@ -565,73 +565,89 @@ pub fn migrate(mg: &Migration, progress: Progress) -> Result<(), Fail> {
 
     // 2. Run each old uninstaller and wait until its Uninstall entry is gone.
     let n = mg.found.len().max(1) as f32;
-    for (i, f) in mg.found.iter().enumerate() {
-        let base = 5.0 + 85.0 * i as f32 / n;
-        let (exe, args) = match (&f.quiet, mg.silent) {
-            (Some(c), _) => (c.exe.clone(), c.args.clone()),
-            (None, false) => match f.entry.get("UninstallString").and_then(legacy::split_command) {
-                Some((exe, args)) => (exe, args),
-                None => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no uninstall command", f.entry.key))),
-            },
-            (None, true) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no silent uninstall", f.entry.key))),
-        };
-        let exe = if exe.is_absolute() { exe } else { sys::system_exe(&exe.to_string_lossy()) };
-        if mg.dry_run {
-            log!("[dry run] would run {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
-            continue;
-        }
-        if let Some(d) = &f.dir {
-            if d.is_dir() && !sys::close_apps(d, None, Duration::from_secs(8), true).is_empty() {
-                return Err(Fail::new(Exit::FilesLocked, "err.reasonV"));
+    let ran = (|| -> Result<(), Fail> {
+        for (i, f) in mg.found.iter().enumerate() {
+            let base = 5.0 + 85.0 * i as f32 / n;
+            let (exe, args) = match (&f.quiet, mg.silent) {
+                (Some(c), _) => (c.exe.clone(), c.args.clone()),
+                (None, false) => match f.entry.get("UninstallString").and_then(legacy::split_command) {
+                    Some((exe, args)) => (exe, args),
+                    None => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no uninstall command", f.entry.key))),
+                },
+                (None, true) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no silent uninstall", f.entry.key))),
+            };
+            let exe = if exe.is_absolute() { exe } else { sys::system_exe(&exe.to_string_lossy()) };
+            if mg.dry_run {
+                log!("[dry run] would run {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
+                continue;
             }
-        }
-        progress(base + 2.0, &exe.to_string_lossy());
-        log!("running {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
-        match sys::run_wait(&exe, &args, f.needs_admin(), Duration::from_secs(600)) {
-            Ok(Some(code)) => log!("old uninstaller exit code {code}"),
-            Ok(None) => return Err(Fail::new(Exit::Error, "err.reasonLegacy|the old uninstaller did not finish in 10 minutes")),
-            Err(sys::RunError::Cancelled) => return Err(Fail::new(Exit::ElevationFailed, "err.reasonUac")),
-            Err(sys::RunError::Other(e)) if f.needs_admin() => return Err(Fail::new(Exit::ElevationFailed, format!("err.reasonUac|{e}"))),
-            Err(sys::RunError::Other(e)) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{}: {e}", exe.display()))),
-        }
-        // Inno and NSIS without `_?=` hand off to a %TEMP% copy; the entry going away is the real "done".
-        let t = std::time::Instant::now();
-        while sys::uninstall_entry_exists(&f.entry) {
-            if t.elapsed() > Duration::from_secs(60) {
-                return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} is still registered after its uninstaller ran", f.entry.key)));
+            if let Some(d) = &f.dir {
+                if d.is_dir() && !sys::close_apps(d, None, Duration::from_secs(8), true).is_empty() {
+                    return Err(Fail::new(Exit::FilesLocked, "err.reasonV"));
+                }
             }
-            std::thread::sleep(Duration::from_millis(250));
-        }
-        log!("legacy entry {} removed", f.entry.key);
-        if let Some(x) = &f.leftover {
-            // `_?=` leaves the NSIS uninstaller in place.
-            match fs::remove_file(x) {
-                Ok(()) => log!("removed leftover {}", x.display()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => log!("leftover {}: {e}", x.display()),
+            progress(base + 2.0, &exe.to_string_lossy());
+            log!("running {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
+            match sys::run_wait(&exe, &args, f.needs_admin(), Duration::from_secs(600)) {
+                Ok(Some(code)) => log!("old uninstaller exit code {code}"),
+                Ok(None) => return Err(Fail::new(Exit::Error, "err.reasonLegacy|the old uninstaller did not finish in 10 minutes")),
+                Err(sys::RunError::Cancelled) => return Err(Fail::new(Exit::ElevationFailed, "err.reasonUac")),
+                Err(sys::RunError::Other(e)) if f.needs_admin() => return Err(Fail::new(Exit::ElevationFailed, format!("err.reasonUac|{e}"))),
+                Err(sys::RunError::Other(e)) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{}: {e}", exe.display()))),
             }
-        }
-        if let Some(d) = &f.dir {
-            if fs::remove_dir(d).is_ok() {
-                log!("removed empty folder {}", d.display());
+            // Inno and NSIS without `_?=` hand off to a %TEMP% copy; the entry going away is the real "done".
+            let t = std::time::Instant::now();
+            while sys::uninstall_entry_exists(&f.entry) {
+                if t.elapsed() > Duration::from_secs(60) {
+                    return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} is still registered after its uninstaller ran", f.entry.key)));
+                }
+                std::thread::sleep(Duration::from_millis(250));
             }
+            log!("legacy entry {} removed", f.entry.key);
+            if let Some(x) = &f.leftover {
+                // `_?=` leaves the NSIS uninstaller in place.
+                match fs::remove_file(x) {
+                    Ok(()) => log!("removed leftover {}", x.display()),
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                    Err(e) => log!("leftover {}: {e}", x.display()),
+                }
+            }
+            if let Some(d) = &f.dir {
+                if fs::remove_dir(d).is_ok() {
+                    log!("removed empty folder {}", d.display());
+                }
+            }
+            progress(base + 85.0 / n, "");
         }
-        progress(base + 85.0 / n, "");
-    }
+        Ok(())
+    })();
 
-    // 3. Put back whatever the old uninstaller deleted.
+    // 3. Put back whatever an old uninstaller deleted, also when a later one failed or was refused, then drop the
+    // backup. If restoring fails the backup stays, and the log says where.
     if !mg.purge && !mg.dry_run && backup.exists() {
+        let mut restored = Ok(());
         for (i, d) in data.iter().enumerate() {
             let b = backup.join(i.to_string());
             if b.exists() {
                 let mut n = 0;
-                copy_missing(&b, d, &mut n).map_err(|e| Fail::io(&e, &format!("restore {} (backup kept in {})", d.display(), backup.display())))?;
-                log!("restored {n} missing files into {}", d.display());
+                match copy_missing(&b, d, &mut n) {
+                    Ok(()) => log!("restored {n} missing files into {}", d.display()),
+                    Err(e) => {
+                        log!("restore {} failed: {e}; backup kept in {}", d.display(), backup.display());
+                        restored = Err(Fail::io(&e, &format!("restore {} (backup kept in {})", d.display(), backup.display())));
+                    }
+                }
             }
         }
-        let r = install_manifest::remove_tree_no_follow(&backup, false, &mut |_| {});
-        log!("removed backup {}: {r:?}", backup.display());
+        if restored.is_ok() {
+            let r = install_manifest::remove_tree_no_follow(&backup, false, &mut |_| {});
+            log!("removed backup {}: {r:?}", backup.display());
+        }
+        if ran.is_ok() {
+            restored?;
+        }
     }
+    ran?;
     sys::notify_shell();
     progress(100.0, "");
     log!("migration done");
