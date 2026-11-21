@@ -7,6 +7,11 @@
 //! - `GLORIA_DUMMY_DATA=<folder>`: use that data folder instead of `%APPDATA%\com.gloria.dummy`.
 //! - `--hold`: show the message box only (no settings file). Closes when asked, like a normal app.
 //! - `--stubborn`: no window, ignores every request to close, runs for two minutes. Only force-closing ends it.
+//! - Fake old uninstaller: `/S` with `GLORIA_DUMMY_LEGACY_KEY=<HKCU\...>` deletes the other files in its folder and
+//!   that registry key, like an NSIS/Inno uninstaller would; `GLORIA_DUMMY_LEGACY_WIPE=<folder>` also deletes that
+//!   (data) folder, like an uninstaller that takes the user's settings with it.
+//! - Fake WebView2 bootstrapper: `/install` with `GLORIA_TEST_WEBVIEW2=<file>` creates that file ("runtime
+//!   installed"), unless `GLORIA_DUMMY_WEBVIEW2_FAIL=1`.
 
 #![windows_subsystem = "windows"]
 
@@ -22,6 +27,22 @@ fn main() {
     let version = version.trim();
     let title = HSTRING::from(format!("GloriaSetup Dummy {version}"));
     let arg = |a: &str| std::env::args().any(|x| x == a);
+
+    if arg("/S") {
+        if let Ok(key) = std::env::var("GLORIA_DUMMY_LEGACY_KEY") {
+            fake_uninstall(&exe, &dir, &key);
+            return;
+        }
+    }
+    if arg("/install") {
+        if let Some(marker) = std::env::var_os("GLORIA_TEST_WEBVIEW2") {
+            if std::env::var("GLORIA_DUMMY_WEBVIEW2_FAIL").is_ok_and(|v| v == "1") {
+                std::process::exit(1);
+            }
+            let _ = std::fs::write(marker, "fake WebView2 runtime");
+            return;
+        }
+    }
 
     if arg("--stubborn") {
         std::thread::sleep(std::time::Duration::from_secs(120));
@@ -59,4 +80,21 @@ fn main() {
     unsafe {
         MessageBoxW(None, &HSTRING::from(text), &title, MB_OK | MB_ICONINFORMATION);
     }
+}
+
+/// Removes everything in `dir` but this exe, then the registry key (an uninstaller can't delete its running self;
+/// NSIS run with `_?=` leaves it behind the same way).
+fn fake_uninstall(exe: &std::path::Path, dir: &std::path::Path, key: &str) {
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let p = e.path();
+        if p == exe {
+            continue;
+        }
+        let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+    }
+    if let Some(wipe) = std::env::var_os("GLORIA_DUMMY_LEGACY_WIPE") {
+        let _ = std::fs::remove_dir_all(wipe);
+    }
+    let _ = std::process::Command::new("reg").args(["delete", key, "/f"]).output();
 }

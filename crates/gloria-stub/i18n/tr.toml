@@ -80,6 +80,8 @@
 "mig.admin" = "Yönetici"
 "mig.adminNote" = "Eski sürüm tüm kullanıcılar için kurulmuş, bu yüzden Windows kaldırmak için izin isteyecek. Yalnızca bu adım izin gerektirir."
 "mig.btn" = "Yükselt"
+"mig.scopeUser" = "bu kullanıcı"
+"mig.scopeAll" = "tüm kullanıcılar"
 "un.kicker" = "Kaldır"
 "un.title" = "{name} kaldırılsın mı?"
 "un.body" = "{name} {version}, kısayolları ve Ayarlar → Uygulamalar'daki kaydı kaldırılır."
@@ -110,6 +112,9 @@
 "err.reasonDown" = "Daha yeni bir sürüm kurulu (2)"
 "err.reasonArgs" = "Kurulum klasörüne izin verilmiyor (6)"
 "err.reasonCancel" = "İptal edildi (1)"
+"err.reasonLegacy" = "Eski sürüm kaldırılamadı (1)"
+"err.reasonUac" = "İzin verilmedi (4)"
+"err.reasonWebView2" = "WebView2 kurulamadı (5)"
 "unerr.kicker" = "Kaldırma başarısız"
 "unerr.title" = "{name} tamamen kaldırılamadı"
 

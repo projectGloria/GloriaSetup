@@ -4,6 +4,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use gloria_core::legacy;
 use gloria_core::paths::{is_within, norm};
 use gloria_core::registry::RegValue;
 use windows::core::{Interface, GUID, HSTRING, PCWSTR, PWSTR};
@@ -96,6 +97,197 @@ pub fn reg_delete(key: &str) -> Result<(), String> {
         return Err(format!("RegDeleteKeyW: {e2:?}"));
     }
     Err(format!("RegDeleteTreeW: {e:?}"))
+}
+
+// ───────────────────────── read-only registry (any hive) ─────────────────────────
+// Legacy detection and the WebView2 check only read. Nothing here writes, and nothing anywhere writes HKLM.
+
+fn open_read(root: HKEY, path: &str, view: REG_SAM_FLAGS) -> Option<HKEY> {
+    let mut h = HKEY::default();
+    let e = unsafe { RegOpenKeyExW(root, &HSTRING::from(path), Some(0), KEY_READ | view, &mut h) };
+    (e == ERROR_SUCCESS).then_some(h)
+}
+
+/// Every value of an open key: strings as is, DWORDs as decimal. Other types are skipped.
+fn read_values(h: HKEY) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    for i in 0.. {
+        let mut name = vec![0u16; 16384];
+        let mut name_len = name.len() as u32;
+        let mut ty = 0u32;
+        let mut data = vec![0u8; 65536];
+        let mut data_len = data.len() as u32;
+        let e = unsafe {
+            RegEnumValueW(h, i, Some(PWSTR(name.as_mut_ptr())), &mut name_len, None, Some(&mut ty), Some(data.as_mut_ptr()), Some(&mut data_len))
+        };
+        if e != ERROR_SUCCESS {
+            // ERROR_NO_MORE_ITEMS ends the list; ERROR_MORE_DATA (a value over 64 KB) is not something we need.
+            if e.0 == 234 {
+                continue;
+            }
+            break;
+        }
+        let name = String::from_utf16_lossy(&name[..name_len as usize]);
+        let data = &data[..data_len as usize];
+        let v = match REG_VALUE_TYPE(ty) {
+            REG_SZ | REG_EXPAND_SZ => {
+                let w: Vec<u16> = data.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let n = w.iter().position(|&c| c == 0).unwrap_or(w.len());
+                String::from_utf16_lossy(&w[..n])
+            }
+            REG_DWORD if data.len() >= 4 => u32::from_le_bytes([data[0], data[1], data[2], data[3]]).to_string(),
+            _ => continue,
+        };
+        out.insert(name, v);
+    }
+    out
+}
+
+fn subkeys(h: HKEY) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in 0.. {
+        let mut name = vec![0u16; 256];
+        let mut len = name.len() as u32;
+        let e = unsafe { RegEnumKeyExW(h, i, Some(PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None) };
+        if e != ERROR_SUCCESS {
+            break;
+        }
+        out.push(String::from_utf16_lossy(&name[..len as usize]));
+    }
+    out
+}
+
+fn hive_root(h: legacy::Hive) -> HKEY {
+    match h {
+        legacy::Hive::User => HKEY_CURRENT_USER,
+        legacy::Hive::Machine => HKEY_LOCAL_MACHINE,
+    }
+}
+
+fn view_flag(v: legacy::View) -> REG_SAM_FLAGS {
+    match v {
+        legacy::View::Native => KEY_WOW64_64KEY,
+        legacy::View::Wow32 => KEY_WOW64_32KEY,
+    }
+}
+
+/// Every Uninstall entry in HKCU and HKLM, both registry views. Read only.
+pub fn uninstall_entries() -> Vec<legacy::Entry> {
+    use legacy::{Hive, View};
+    let mut out = Vec::new();
+    let mut hives = vec![Hive::User];
+    // Debug builds: tests can keep the machine's own HKLM entries out of the picture.
+    if !(cfg!(debug_assertions) && std::env::var_os("GLORIA_TEST_NO_HKLM").is_some()) {
+        hives.push(Hive::Machine);
+    }
+    for hive in hives {
+        for view in [View::Native, View::Wow32] {
+            let Some(root) = open_read(hive_root(hive), gloria_core::registry::UNINSTALL_ROOT, view_flag(view)) else { continue };
+            for key in subkeys(root) {
+                if let Some(h) = open_read(root, &key, view_flag(view)) {
+                    out.push(legacy::Entry { hive, view, key, values: read_values(h) });
+                    let _ = unsafe { RegCloseKey(h) };
+                }
+            }
+            let _ = unsafe { RegCloseKey(root) };
+        }
+    }
+    out
+}
+
+/// Is this Uninstall entry still there?
+pub fn uninstall_entry_exists(e: &legacy::Entry) -> bool {
+    let path = format!(r"{}\{}", gloria_core::registry::UNINSTALL_ROOT, e.key);
+    match open_read(hive_root(e.hive), &path, view_flag(e.view)) {
+        Some(h) => {
+            let _ = unsafe { RegCloseKey(h) };
+            true
+        }
+        None => false,
+    }
+}
+
+const WEBVIEW2_CLIENT: &str = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}";
+
+/// Is the WebView2 Evergreen Runtime installed (machine-wide or for this user)? `pv` set and not `0.0.0.0`.
+pub fn webview2_present() -> bool {
+    // Debug builds: `GLORIA_TEST_WEBVIEW2=<file>` makes "present" mean "that file exists".
+    #[cfg(debug_assertions)]
+    if let Some(f) = std::env::var_os("GLORIA_TEST_WEBVIEW2") {
+        return Path::new(&f).exists();
+    }
+    let probe = |root: HKEY, path: String, view: REG_SAM_FLAGS| -> bool {
+        let Some(h) = open_read(root, &path, view) else { return false };
+        let v = read_values(h);
+        let _ = unsafe { RegCloseKey(h) };
+        v.iter().any(|(k, v)| k.eq_ignore_ascii_case("pv") && !v.is_empty() && v != "0.0.0.0")
+    };
+    let r = probe(HKEY_LOCAL_MACHINE, format!(r"SOFTWARE\{WEBVIEW2_CLIENT}"), KEY_WOW64_32KEY)
+        || probe(HKEY_CURRENT_USER, format!(r"Software\{WEBVIEW2_CLIENT}"), REG_SAM_FLAGS(0));
+    log!("WebView2 runtime present: {r}");
+    r
+}
+
+// ───────────────────────────── running other installers ─────────────────────────────
+
+pub enum RunError {
+    /// The user said no to the UAC prompt.
+    Cancelled,
+    Other(String),
+}
+
+/// Runs `exe args` and waits for it. With `elevate`, Windows asks for admin first (only the old all-users
+/// uninstaller ever runs that way). Returns the exit code, or `None` if it was still running after `timeout`.
+pub fn run_wait(exe: &Path, args: &str, elevate: bool, timeout: Duration) -> Result<Option<u32>, RunError> {
+    use windows::Win32::System::Threading::GetExitCodeProcess;
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+    if !elevate {
+        let mut child = std::process::Command::new(exe).raw_arg(args).creation_flags(CREATE_NO_WINDOW).spawn().map_err(|e| RunError::Other(e.to_string()))?;
+        let end = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(s)) => return Ok(Some(s.code().unwrap_or(1) as u32)),
+                Ok(None) if Instant::now() >= end => return Ok(None),
+                Ok(None) => std::thread::sleep(Duration::from_millis(200)),
+                Err(e) => return Err(RunError::Other(e.to_string())),
+            }
+        }
+    }
+    let verb = HSTRING::from("runas");
+    let file = HSTRING::from(exe.as_os_str());
+    let params = HSTRING::from(args);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR(verb.as_ptr()),
+        lpFile: PCWSTR(file.as_ptr()),
+        lpParameters: PCWSTR(params.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
+        // ERROR_CANCELLED: the UAC prompt was declined.
+        if e.code() == windows::Win32::Foundation::ERROR_CANCELLED.to_hresult() {
+            return Err(RunError::Cancelled);
+        }
+        return Err(RunError::Other(e.to_string()));
+    }
+    let h = info.hProcess;
+    if h.is_invalid() {
+        return Ok(Some(0));
+    }
+    let r = unsafe { WaitForSingleObject(h, timeout.as_millis().min(u32::MAX as u128 - 1) as u32) };
+    let mut code = 1u32;
+    let done = r == WAIT_OBJECT_0 && unsafe { GetExitCodeProcess(h, &mut code) }.is_ok();
+    let _ = unsafe { CloseHandle(h) };
+    Ok(done.then_some(code))
+}
+
+/// `%SystemRoot%\System32\<exe>` for a bare system tool name such as `msiexec.exe`.
+pub fn system_exe(name: &str) -> PathBuf {
+    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    root.join("System32").join(name)
 }
 
 // ───────────────────────────── shortcuts ─────────────────────────────

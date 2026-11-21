@@ -11,8 +11,9 @@ use gloria_core::manifest::AppManifest;
 use gloria_core::paths::{self, norm};
 use gloria_core::version::{self, Relation};
 
-use crate::app::{App, AppInfo, ErrorInfo, Effect, Flow, Page, Running, Shared};
-use crate::engine::{self, Existing, Fail, Request, Source, Uninstall};
+use crate::app::{App, AppInfo, ErrorInfo, Effect, Flow, Legacy, Page, Running, Shared};
+use crate::engine::{self, Existing, Fail, Migration, Request, Source, Uninstall};
+use gloria_core::legacy::Found;
 use crate::gfx::Gfx;
 use crate::window::{self, Handler};
 use crate::{i18n, log, sys};
@@ -45,14 +46,23 @@ fn reporter(job: &Shared, lo: f32, hi: f32) -> impl FnMut(f32, &str) -> bool + '
 }
 
 /// What a setup does around `engine::install`: remove the installed copy first for a clean reinstall / downgrade, or
-/// when the user picked a different folder.
+/// when the user picked a different folder; or remove an install made by an older installer (`migrate`).
 struct Plan {
     remove_first: Option<(PathBuf, bool)>,
+    migrate: Vec<Found>,
+    silent: bool,
     req: Request,
 }
 
 fn run_plan(src: &Source, plan: &Plan, job: Option<&Shared>) -> Result<(), Fail> {
     let mut quiet = |_: f32, _: &str| true;
+    if !plan.migrate.is_empty() {
+        let mg = Migration { app: &src.m.app, found: &plan.migrate, purge: plan.req.purge, dry_run: plan.req.dry_run, silent: plan.silent };
+        match job {
+            Some(j) => engine::migrate(&mg, &mut reporter(j, 0.0, 20.0))?,
+            None => engine::migrate(&mg, &mut quiet)?,
+        }
+    }
     if let Some((dir, purge)) = &plan.remove_first {
         let u = Uninstall { app: &src.m.app, dir: dir.clone(), purge: *purge, dry_run: plan.req.dry_run, wait_pid: None };
         match job {
@@ -70,10 +80,12 @@ fn run_plan(src: &Source, plan: &Plan, job: Option<&Shared>) -> Result<(), Fail>
 
 pub fn setup(args: &Args, src: Source) -> i32 {
     let ex = engine::detect(&src.m.app);
+    // Our own key wins; only without it does an install made by an older installer count.
+    let legacy = if ex.is_none() { engine::detect_legacy(&src.m.app) } else { Vec::new() };
     if args.silent {
-        return silent_setup(args, &src, ex.as_ref());
+        return silent_setup(args, &src, ex.as_ref(), legacy);
     }
-    match setup_ui(args, src, ex) {
+    match setup_ui(args, src, ex, legacy) {
         Ok(c) => c,
         Err(e) => {
             log!("window: {e}");
@@ -82,7 +94,13 @@ pub fn setup(args: &Args, src: Source) -> i32 {
     }
 }
 
-fn silent_setup(args: &Args, src: &Source, ex: Option<&Existing>) -> i32 {
+/// Is `d` the folder of one of the old installs? (It still holds the old files, so the "append \<Name>" rule for
+/// non-empty folders must not apply: the migration empties it first.)
+fn is_legacy_dir(legacy: &[Found], d: &Path) -> bool {
+    legacy.iter().any(|f| f.dir.as_deref().is_some_and(|x| same_dir(x, d)))
+}
+
+fn silent_setup(args: &Args, src: &Source, ex: Option<&Existing>, legacy: Vec<Found>) -> i32 {
     let app = &src.m.app;
     let rel = ex.map(|e| version::relation(&e.version, &app.parsed_version()));
     if rel == Some(Relation::Downgrade) && !args.allow_downgrade {
@@ -91,6 +109,7 @@ fn silent_setup(args: &Args, src: &Source, ex: Option<&Existing>) -> i32 {
     }
     let dir = match (&args.install_dir, ex) {
         (Some(d), _) => match engine::resolve_dir(app, d) {
+            Ok(_) if is_legacy_dir(&legacy, d) => d.clone(),
             Ok(d) => d,
             Err(p) => {
                 log!("install folder {} refused: {p:?}", d.display());
@@ -107,7 +126,9 @@ fn silent_setup(args: &Args, src: &Source, ex: Option<&Existing>) -> i32 {
     let clean = matches!(rel, Some(Relation::Downgrade)) || (rel == Some(Relation::Same) && args.purge);
     let remove_first = ex.filter(|e| e.manifest.is_some() && (clean || !same_dir(&e.dir, &dir))).map(|e| (e.dir.clone(), clean && args.purge));
     let desktop = ex.and_then(|e| e.manifest.as_ref()).map(|m| m.options.desktop_shortcut).unwrap_or(false);
-    let plan = Plan { remove_first, req: Request { dir: dir.clone(), desktop, purge: false, dry_run: args.dry_run, force_close: true } };
+    // Migrating keeps the user's data unless /PURGE.
+    let purge = !legacy.is_empty() && args.purge;
+    let plan = Plan { remove_first, migrate: legacy, silent: true, req: Request { dir: dir.clone(), desktop, purge, dry_run: args.dry_run, force_close: true } };
     match run_plan(src, &plan, None) {
         Ok(()) => {
             if args.relaunch && !args.dry_run {
@@ -139,7 +160,7 @@ fn new_app(g: &Gfx, src_m: gloria_core::manifest::RuntimeManifest, lang: &str) -
     Ok(a)
 }
 
-fn setup_ui(args: &Args, src: Source, ex: Option<Existing>) -> windows::core::Result<i32> {
+fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) -> windows::core::Result<i32> {
     let lang = i18n::detect(args.lang.as_deref());
     let g = Gfx::new(lang)?;
     let mut a = new_app(&g, src.m.clone(), lang)?;
@@ -167,13 +188,26 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>) -> windows::core::Re
             if let Some(d) = &args.install_dir {
                 a.set_folder(d.to_string_lossy().into_owned());
             }
-            Page::Welcome
+            match legacy.first() {
+                Some(f) => {
+                    a.legacy = Some(Legacy {
+                        kind: f.kind.label().into(),
+                        scope: if f.needs_admin() { "mig.scopeAll" } else { "mig.scopeUser" }.into(),
+                        path: f.dir.as_ref().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default(),
+                        admin: legacy.iter().any(Found::needs_admin),
+                        version: f.version.clone(),
+                    });
+                    Page::Migrate
+                }
+                None => Page::Welcome,
+            }
         }
     };
     a.page = page;
     a.home = page;
     let src = Arc::new(src);
     let ex = Arc::new(ex);
+    let legacy = Arc::new(legacy);
     let dry_run = args.dry_run;
     let handler: Handler = Box::new(move |app, eff, _hwnd| match eff {
         Effect::StartJob(flow) => {
@@ -191,7 +225,10 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>) -> windows::core::Re
             let remove_first = existing.filter(|d| clean || !same_dir(d, &dir)).map(|d| (d, clean && app.purge));
             let desktop = app.desktop;
             let launch = app.launch;
-            let plan = Plan { remove_first, req: Request { dir: dir.clone(), desktop, purge: false, dry_run, force_close: false } };
+            // From the migrate page: remove the old installs first; the data checkbox there decides `purge`.
+            let migrate = if home == Page::Migrate { legacy.as_ref().clone() } else { Vec::new() };
+            let purge = !migrate.is_empty() && app.purge;
+            let plan = Plan { remove_first, migrate, silent: false, req: Request { dir: dir.clone(), desktop, purge, dry_run, force_close: false } };
             let src = src.clone();
             std::thread::spawn(move || {
                 let r = run_plan(&src, &plan, Some(&job));

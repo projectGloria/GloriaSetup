@@ -12,6 +12,9 @@ pub const UNINSTALLER_NAME: &str = "uninstall.exe";
 pub const INSTALL_MANIFEST_NAME: &str = "install-manifest.json";
 /// Hidden work folder inside the install folder (staging, backup).
 pub const WORK_DIR: &str = ".gloria";
+/// Archive folder for the bundled WebView2 Evergreen bootstrapper. Staged and run if needed, never installed.
+pub const WEBVIEW2_DIR: &str = ".gloria-webview2";
+pub const WEBVIEW2_SETUP_NAME: &str = "MicrosoftEdgeWebview2Setup.exe";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

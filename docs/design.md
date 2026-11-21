@@ -252,12 +252,15 @@ Update reuses the install folder and stored options without asking.
 Scan `Uninstall` under HKCU and HKLM with both `KEY_WOW64_64KEY` and `KEY_WOW64_32KEY`, match
 `normalize(strip_version(DisplayName))` against `name` + `legacy_names`, skip our own key. Uninstall command by type:
 
-| Type (detected by) | Command |
+| Type (detected by, in this order) | Command |
 |---|---|
-| any with a valid `QuietUninstallString` | that string |
-| Inno (`*_is1` subkey / `Inno Setup:` values) | `"unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART` |
 | MSI (`WindowsInstaller=1` / `MsiExec` + GUID) | `msiexec.exe /X{GUID} /qn /norestart` |
-| NSIS (Tauri) | `"<dir>\uninstall.exe" /S _?=<dir>`, then delete that leftover uninstaller |
+| Inno (`*_is1` subkey / `Inno Setup:` values) | `"unins000.exe" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART` |
+| NSIS (Tauri; `NullsoftInst` in the uninstaller exe) | `"<dir>\uninstall.exe" /S _?=<dir>`, then delete that leftover uninstaller |
+| anything else with an absolute `QuietUninstallString` | that string (none: the UI runs `UninstallString`, silent mode stops with exit 1) |
+
+After the uninstaller exits, wait up to 60 s for its Uninstall key to disappear (Inno and some others hand off to a
+`%TEMP%` copy and return early).
 
 `_?=` keeps NSIS synchronous (no `%TEMP%` copy racing with us). HKLM entries need elevation: the UI says so and asks;
 only the old uninstaller runs elevated (`ShellExecuteExW` "runas"); cancel → stop with exit/UI code 4.
@@ -346,6 +349,9 @@ exists; the stub stays "clean" (no self-modification, no network, no packed/encr
    remaining silent-mode rules and tests. Done: crash recovery at every commit step, closing a running app (asked
    first, forced in silent mode), locked files (exit 3, old version kept), `/RELAUNCH`.
 3. **Migration + WebView2.** Legacy NSIS / MSI / Inno detection in both registry views, elevation, data backup and
-   restore, bundled WebView2 bootstrapper.
+   restore, bundled WebView2 bootstrapper. Done: automated tests cover per-user migrations (quiet string and NSIS
+   `_?=`, data restored even when the old uninstaller wipes it, `/PURGE`) and the bootstrapper (runs only when the
+   runtime is missing, failure exits 5 with nothing installed). The elevated HKLM path is checked by hand in Windows
+   Sandbox with a real all-users installer.
 4. **CI + polish.** Composite action, optional signing, README "How to test", social preview image.
 5. **Pilot.** OmniConvert migrated in its own repo (separate session).

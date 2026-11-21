@@ -116,7 +116,7 @@ pub enum Flow {
 pub struct Legacy {
     pub kind: String,
     pub scope: String,
-    /// Where the old install lives; the M2 migration step removes it.
+    /// Where the old install lives (shown in the log; the engine works from the registry entry).
     #[allow(dead_code)]
     pub path: String,
     pub admin: bool,
@@ -284,7 +284,7 @@ impl App {
         self.installed = Some(ver(minor as i64 - 1));
         self.legacy = Some(Legacy {
             kind: "NSIS".into(),
-            scope: "all users".into(),
+            scope: "mig.scopeAll".into(),
             path: format!(r"C:\Program Files\{name}"),
             admin: true,
             version: ver(minor as i64 - 1),

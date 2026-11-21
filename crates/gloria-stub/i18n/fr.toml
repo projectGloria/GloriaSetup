@@ -80,6 +80,8 @@
 "mig.admin" = "Admin"
 "mig.adminNote" = "L'ancienne version a été installée pour tous les utilisateurs : Windows demandera l'autorisation de la supprimer. Seule cette étape en a besoin."
 "mig.btn" = "Mettre à niveau"
+"mig.scopeUser" = "cet utilisateur"
+"mig.scopeAll" = "tous les utilisateurs"
 "un.kicker" = "Désinstallation"
 "un.title" = "Désinstaller {name} ?"
 "un.body" = "Supprime {name} {version}, ses raccourcis et son entrée dans Paramètres → Applications."
@@ -110,6 +112,9 @@
 "err.reasonDown" = "Version plus récente installée (2)"
 "err.reasonArgs" = "Dossier d'installation non autorisé (6)"
 "err.reasonCancel" = "Annulé (1)"
+"err.reasonLegacy" = "Impossible de supprimer l'ancienne version (1)"
+"err.reasonUac" = "Autorisation refusée (4)"
+"err.reasonWebView2" = "Impossible d'installer WebView2 (5)"
 "unerr.kicker" = "Échec de la désinstallation"
 "unerr.title" = "Impossible de supprimer entièrement {name}"
 

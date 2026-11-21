@@ -215,12 +215,12 @@ pub fn remove_tree_no_follow(p: &Path, dry_run: bool, log: &mut dyn FnMut(&Path)
 }
 
 #[cfg(windows)]
-fn is_reparse_point(md: &fs::Metadata) -> bool {
+pub fn is_reparse_point(md: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     md.file_attributes() & 0x400 != 0 // FILE_ATTRIBUTE_REPARSE_POINT
 }
 #[cfg(not(windows))]
-fn is_reparse_point(_: &fs::Metadata) -> bool {
+pub fn is_reparse_point(_: &fs::Metadata) -> bool {
     false
 }
 

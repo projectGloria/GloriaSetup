@@ -80,6 +80,8 @@
 "mig.admin" = "Admin"
 "mig.adminNote" = "La versión anterior se instaló para todos los usuarios, así que Windows pedirá permiso para quitarla. Solo ese paso lo necesita."
 "mig.btn" = "Actualizar"
+"mig.scopeUser" = "este usuario"
+"mig.scopeAll" = "todos los usuarios"
 "un.kicker" = "Desinstalar"
 "un.title" = "¿Desinstalar {name}?"
 "un.body" = "Quita {name} {version}, sus accesos directos y su entrada en Configuración → Aplicaciones."
@@ -110,6 +112,9 @@
 "err.reasonDown" = "Hay una versión más reciente instalada (2)"
 "err.reasonArgs" = "Carpeta de instalación no permitida (6)"
 "err.reasonCancel" = "Cancelado (1)"
+"err.reasonLegacy" = "No se pudo quitar la versión anterior (1)"
+"err.reasonUac" = "Permiso no concedido (4)"
+"err.reasonWebView2" = "No se pudo instalar WebView2 (5)"
 "unerr.kicker" = "La desinstalación falló"
 "unerr.title" = "No se pudo eliminar {name} por completo"
 

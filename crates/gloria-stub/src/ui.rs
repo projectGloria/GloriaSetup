@@ -891,7 +891,7 @@ impl<'u, 'a> Ui<'u, 'a> {
         let tf = font(Family::Sans, 400, 12.5);
         let sf = font(Family::Mono, 400, 10.0);
         let rows = [
-            (self.t("mig.step1"), format!("{} · {} · {}", legacy.version, legacy.kind, legacy.scope), legacy.admin),
+            (self.t("mig.step1"), format!("{} · {} · {}", legacy.version, legacy.kind, self.t(&legacy.scope)), legacy.admin),
             (self.t("mig.step2"), folder, false),
         ];
         let rh = 16.0 + self.lh(tf) + 2.0 + self.lh(sf);

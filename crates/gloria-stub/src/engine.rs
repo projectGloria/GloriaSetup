@@ -13,7 +13,8 @@ use gloria_core::archive::{self, safe_rel_path, FileEntry};
 use gloria_core::exit::Exit;
 use gloria_core::install_manifest::{self, plan_removal, InstallManifest, Options, Removal};
 use gloria_core::journal::{self, Recovered};
-use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, WORK_DIR};
+use gloria_core::legacy::{self, Found};
+use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, WEBVIEW2_DIR, WEBVIEW2_SETUP_NAME, WORK_DIR};
 use gloria_core::paths::{self, is_within, norm, parse_data_folder, PathProblem, SystemDirs};
 use gloria_core::payload::{self, Payload};
 use gloria_core::registry;
@@ -214,6 +215,10 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
                 log!("[dry run] would remove data folder {}", d.display());
             }
         }
+        if app.needs_webview2 {
+            let bundled = files.iter().any(|f| f.path.to_ascii_lowercase().starts_with(&format!("{WEBVIEW2_DIR}\\").to_ascii_lowercase()));
+            log!("[dry run] would check WebView2 (present: {}, bootstrapper bundled: {bundled})", sys::webview2_present());
+        }
         for (k, v) in registry::uninstall_values(app, dir, files.iter().map(|f| f.size).sum(), gloria_core::GLORIA_SETUP_VERSION) {
             log!("[dry run] would set HKCU\\{}\\{}\\{k} = {v:?}", registry::UNINSTALL_ROOT, app.uninstall_key());
         }
@@ -267,10 +272,18 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
     if cancelled {
         return Err(fail_clean(Fail::cancelled()));
     }
-    let entries: Vec<FileEntry> = staged.map_err(|e| fail_clean(Fail::io(&e, "extract")))?;
+    let mut entries: Vec<FileEntry> = staged.map_err(|e| fail_clean(Fail::io(&e, "extract")))?;
+    // The WebView2 bootstrapper is staged like any file but never installed.
+    let reserved = format!("{WEBVIEW2_DIR}\\").to_ascii_lowercase();
+    entries.retain(|e| !e.path.to_ascii_lowercase().starts_with(&reserved));
     log!("staged {} files", entries.len());
     if !progress(70.0, "") {
         return Err(fail_clean(Fail::cancelled()));
+    }
+
+    // WebView2: before anything is committed, so a failure leaves the previous version as it was.
+    if app.needs_webview2 {
+        ensure_webview2(&staging.join(WEBVIEW2_DIR).join(WEBVIEW2_SETUP_NAME)).map_err(fail_clean)?;
     }
 
     // The new install manifest is staged too, so it is swapped in (and rolled back) with the files it lists.
@@ -435,6 +448,194 @@ fn remove_data(app: &AppManifest, recorded: &[String], install_dir: &Path, dry_r
         let r = install_manifest::remove_tree_no_follow(&d, dry_run, &mut |_| n += 1);
         log!("{}removed data folder {} ({n} entries): {r:?}", if dry_run { "[dry run] would have " } else { "" }, d.display());
     }
+}
+
+// ───────────────────────────── WebView2 ─────────────────────────────
+
+/// Makes sure the WebView2 runtime is there: runs the bundled Evergreen bootstrapper if it isn't (it installs per
+/// user without admin), then checks again. Exit 5 if it is still missing.
+fn ensure_webview2(bootstrapper: &Path) -> Result<(), Fail> {
+    if sys::webview2_present() {
+        return Ok(());
+    }
+    if !bootstrapper.is_file() {
+        return Err(Fail::new(Exit::WebView2Failed, "err.reasonWebView2|the runtime is missing and this setup does not bundle its installer"));
+    }
+    log!("installing WebView2 with {}", bootstrapper.display());
+    match sys::run_wait(bootstrapper, "/silent /install", false, Duration::from_secs(600)) {
+        Ok(code) => log!("WebView2 bootstrapper exit code {code:?}"),
+        Err(sys::RunError::Cancelled) => log!("WebView2 bootstrapper cancelled"),
+        Err(sys::RunError::Other(e)) => log!("WebView2 bootstrapper: {e}"),
+    }
+    if sys::webview2_present() {
+        Ok(())
+    } else {
+        Err(Fail::new(Exit::WebView2Failed, "err.reasonWebView2|the WebView2 runtime is still missing after its installer ran"))
+    }
+}
+
+// ───────────────────────────── legacy installs ─────────────────────────────
+
+/// Does this exe carry the NSIS marker? (Tauri's NSIS uninstallers do.)
+fn is_nsis(exe: &Path) -> bool {
+    let Ok(f) = File::open(exe) else { return false };
+    let mut buf = Vec::new();
+    if f.take(16 << 20).read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    buf.windows(12).any(|w| w == b"NullsoftInst")
+}
+
+/// Installs of this app made by an older installer, per-user ones first.
+pub fn detect_legacy(app: &AppManifest) -> Vec<Found> {
+    let found = legacy::find(app, sys::uninstall_entries(), &is_nsis);
+    for f in &found {
+        log!(
+            "legacy install: {:?}\\{} ({}, {}, version {:?}, folder {:?}, quiet: {:?})",
+            f.entry.hive,
+            f.entry.key,
+            f.kind.label(),
+            if f.needs_admin() { "all users" } else { "this user" },
+            f.version,
+            f.dir,
+            f.quiet
+        );
+    }
+    found
+}
+
+pub struct Migration<'a> {
+    pub app: &'a AppManifest,
+    pub found: &'a [Found],
+    /// The user chose to remove their data; otherwise it is backed up first and anything missing afterwards is put
+    /// back.
+    pub purge: bool,
+    pub dry_run: bool,
+    /// No UI: an entry with no silent uninstall is refused instead of running its interactive uninstaller.
+    pub silent: bool,
+}
+
+fn backup_dir(app: &AppManifest) -> PathBuf {
+    std::env::temp_dir().join(format!("GloriaSetup-backup-{}", app.id))
+}
+
+/// Copies `src` into `dst`, never following links and never overwriting a file already in `dst`.
+fn copy_missing(src: &Path, dst: &Path, n: &mut usize) -> io::Result<()> {
+    let md = fs::symlink_metadata(src)?;
+    if md.file_type().is_symlink() || install_manifest::is_reparse_point(&md) {
+        return Ok(());
+    }
+    if md.is_dir() {
+        fs::create_dir_all(dst)?;
+        for e in fs::read_dir(src)? {
+            let e = e?;
+            copy_missing(&e.path(), &dst.join(e.file_name()), n)?;
+        }
+    } else if md.is_file() && fs::symlink_metadata(dst).is_err() {
+        if let Some(p) = dst.parent() {
+            fs::create_dir_all(p)?;
+        }
+        fs::copy(src, dst)?;
+        *n += 1;
+    }
+    Ok(())
+}
+
+/// Removes every legacy install in `mg.found` by running its own uninstaller, keeping the user's data unless they
+/// chose otherwise. Runs before the normal install, which then goes in fresh.
+pub fn migrate(mg: &Migration, progress: Progress) -> Result<(), Fail> {
+    let app = mg.app;
+    let data = data_folders(app, &[]);
+    let backup = backup_dir(app);
+    log!("migrating {} legacy install(s) of {} (purge: {}, dry run: {})", mg.found.len(), app.id, mg.purge, mg.dry_run);
+    progress(2.0, "");
+
+    // 1. Back up the data folders. A failed backup stops here, before anything is removed.
+    if !mg.purge {
+        for (i, d) in data.iter().enumerate().filter(|(_, d)| d.exists()) {
+            if mg.dry_run {
+                log!("[dry run] would back up {} to {}", d.display(), backup.join(i.to_string()).display());
+                continue;
+            }
+            let mut n = 0;
+            copy_missing(d, &backup.join(i.to_string()), &mut n).map_err(|e| Fail::io(&e, &format!("back up {}", d.display())))?;
+            log!("backed up {} ({n} files) to {}", d.display(), backup.join(i.to_string()).display());
+        }
+    }
+
+    // 2. Run each old uninstaller and wait until its Uninstall entry is gone.
+    let n = mg.found.len().max(1) as f32;
+    for (i, f) in mg.found.iter().enumerate() {
+        let base = 5.0 + 85.0 * i as f32 / n;
+        let (exe, args) = match (&f.quiet, mg.silent) {
+            (Some(c), _) => (c.exe.clone(), c.args.clone()),
+            (None, false) => match f.entry.get("UninstallString").and_then(legacy::split_command) {
+                Some((exe, args)) => (exe, args),
+                None => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no uninstall command", f.entry.key))),
+            },
+            (None, true) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} has no silent uninstall", f.entry.key))),
+        };
+        let exe = if exe.is_absolute() { exe } else { sys::system_exe(&exe.to_string_lossy()) };
+        if mg.dry_run {
+            log!("[dry run] would run {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
+            continue;
+        }
+        if let Some(d) = &f.dir {
+            if d.is_dir() && !sys::close_apps(d, None, Duration::from_secs(8), true).is_empty() {
+                return Err(Fail::new(Exit::FilesLocked, "err.reasonV"));
+            }
+        }
+        progress(base + 2.0, &exe.to_string_lossy());
+        log!("running {}{} {args}", exe.display(), if f.needs_admin() { " (as admin)" } else { "" });
+        match sys::run_wait(&exe, &args, f.needs_admin(), Duration::from_secs(600)) {
+            Ok(Some(code)) => log!("old uninstaller exit code {code}"),
+            Ok(None) => return Err(Fail::new(Exit::Error, "err.reasonLegacy|the old uninstaller did not finish in 10 minutes")),
+            Err(sys::RunError::Cancelled) => return Err(Fail::new(Exit::ElevationFailed, "err.reasonUac")),
+            Err(sys::RunError::Other(e)) if f.needs_admin() => return Err(Fail::new(Exit::ElevationFailed, format!("err.reasonUac|{e}"))),
+            Err(sys::RunError::Other(e)) => return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{}: {e}", exe.display()))),
+        }
+        // Inno and NSIS without `_?=` hand off to a %TEMP% copy; the entry going away is the real "done".
+        let t = std::time::Instant::now();
+        while sys::uninstall_entry_exists(&f.entry) {
+            if t.elapsed() > Duration::from_secs(60) {
+                return Err(Fail::new(Exit::Error, format!("err.reasonLegacy|{} is still registered after its uninstaller ran", f.entry.key)));
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        log!("legacy entry {} removed", f.entry.key);
+        if let Some(x) = &f.leftover {
+            // `_?=` leaves the NSIS uninstaller in place.
+            match fs::remove_file(x) {
+                Ok(()) => log!("removed leftover {}", x.display()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => log!("leftover {}: {e}", x.display()),
+            }
+        }
+        if let Some(d) = &f.dir {
+            if fs::remove_dir(d).is_ok() {
+                log!("removed empty folder {}", d.display());
+            }
+        }
+        progress(base + 85.0 / n, "");
+    }
+
+    // 3. Put back whatever the old uninstaller deleted.
+    if !mg.purge && !mg.dry_run && backup.exists() {
+        for (i, d) in data.iter().enumerate() {
+            let b = backup.join(i.to_string());
+            if b.exists() {
+                let mut n = 0;
+                copy_missing(&b, d, &mut n).map_err(|e| Fail::io(&e, &format!("restore {} (backup kept in {})", d.display(), backup.display())))?;
+                log!("restored {n} missing files into {}", d.display());
+            }
+        }
+        let r = install_manifest::remove_tree_no_follow(&backup, false, &mut |_| {});
+        log!("removed backup {}: {r:?}", backup.display());
+    }
+    sys::notify_shell();
+    progress(100.0, "");
+    log!("migration done");
+    Ok(())
 }
 
 // ───────────────────────────── uninstall ─────────────────────────────

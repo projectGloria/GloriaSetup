@@ -32,7 +32,9 @@ powershell -ExecutionPolicy Bypass -File sandbox\run.ps1           # Windows San
   `ui.rs` (immediate-mode Direct2D drawing via `gfx.rs`). `real.rs` wires the UI and silent mode to `engine.rs`
   (install/uninstall/trampoline). `shot.rs` renders PNGs. Strings in `i18n/*.toml` (all four must have every key).
 - `examples/dummy`: test app + two icons + `pack.ps1`. Test modes: `--hold` (window, closes when asked),
-  `--stubborn` (ignores close, must be force-closed), `--quiet` / `GLORIA_DUMMY_QUIET=1`, `GLORIA_DUMMY_DATA=<dir>`.
+  `--stubborn` (ignores close, must be force-closed), `--quiet` / `GLORIA_DUMMY_QUIET=1`, `GLORIA_DUMMY_DATA=<dir>`,
+  fake old uninstaller (`/S` + `GLORIA_DUMMY_LEGACY_KEY=<HKCU key>`, optional `GLORIA_DUMMY_LEGACY_WIPE=<dir>`),
+  fake WebView2 bootstrapper (`/install` + `GLORIA_TEST_WEBVIEW2`; `GLORIA_DUMMY_WEBVIEW2_FAIL=1` makes it fail).
   `sandbox/`: Windows Sandbox config.
 
 ## GloriaLauncher contract (do not change values)
@@ -80,13 +82,22 @@ security directory, so Authenticode signing doesn't break it. The uninstaller pa
 - Installs stage into `<dir>\.gloria\staging`, write `.gloria\journal`, rename-commit with backups in
   `.gloria\backup`, write the registry, then delete the journal (the commit point). Any later setup or uninstall run
   rolls back a journal it finds before doing anything else. `.gloria` without a journal is just deleted.
-- Debug stubs only: `GLORIA_TEST_CRASH_AT=<n>` exits 99 at commit step n (renames, then registry, then journal delete).
+- Debug stubs only: `GLORIA_TEST_CRASH_AT=<n>` exits 99 at commit step n (renames, then registry, then journal delete);
+  `GLORIA_TEST_WEBVIEW2=<file>` makes "WebView2 present" mean "that file exists"; `GLORIA_TEST_NO_HKLM=1` skips HKLM
+  when looking for old installs, so tests never migrate a real install on the dev machine.
+- Old installs (`gloria-core::legacy`): looked for only when our own `projectGloria.<id>` key is absent, in HKCU and
+  HKLM, both views. Migration backs up the data folders to `%TEMP%\GloriaSetup-backup-<id>` (unless purging), runs
+  each old uninstaller (only HKLM ones elevated; UAC declined = exit 4), puts back missing data without overwriting,
+  then installs normally. `/D` at the old folder installs in place.
+- WebView2: the bootstrapper is packed under `.gloria-webview2\` (`gloria-pack --webview2-bootstrapper`, only with
+  `needs_webview2`), staged, run with `/silent /install` only when the runtime is missing, never installed. Never
+  download it in a session; the user supplies it.
 - Running apps are found by image path, compared with both the given folder and its resolved final path (children of
   packaged apps such as this desktop app see a redirected `%LOCALAPPDATA%`). Silent mode force-closes after a grace.
 
 ## Conventions
 
-- Rust 1.80+, x64, `windows` crate 0.62. Strictly per-user; nothing may need admin (except the opt-in legacy
-  HKLM migration in M3).
+- Rust 1.80+, x64, `windows` crate 0.62. Strictly per-user; nothing may need admin (except running an old all-users
+  uninstaller during migration, after asking).
 - Commit messages: one plain sentence saying what changed and why. No `feat:`/`fix:` prefixes.
 - Examples and docs use `C:\Users\you`, never a real user name.

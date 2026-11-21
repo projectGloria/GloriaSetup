@@ -80,6 +80,8 @@
 "mig.admin" = "Admin"
 "mig.adminNote" = "The old version was installed for all users, so Windows will ask for permission to remove it. Only that step needs it."
 "mig.btn" = "Upgrade"
+"mig.scopeUser" = "this user"
+"mig.scopeAll" = "all users"
 "un.kicker" = "Uninstall"
 "un.title" = "Uninstall {name}?"
 "un.body" = "Removes {name} {version}, its shortcuts and its entry in Settings → Apps."
@@ -110,6 +112,9 @@
 "err.reasonDown" = "Newer version installed (2)"
 "err.reasonArgs" = "Install folder not allowed (6)"
 "err.reasonCancel" = "Cancelled (1)"
+"err.reasonLegacy" = "Old version couldn't be removed (1)"
+"err.reasonUac" = "Permission not given (4)"
+"err.reasonWebView2" = "WebView2 couldn't be installed (5)"
 "unerr.kicker" = "Uninstall failed"
 "unerr.title" = "{name} couldn't be fully removed"
 

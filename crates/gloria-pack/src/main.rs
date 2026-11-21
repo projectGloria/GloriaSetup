@@ -9,7 +9,7 @@ gloria-pack: build a GloriaSetup installer
 USAGE:
   gloria-pack --app <folder> [--manifest <gloria.toml>] [--stub <gloria-stub.exe>]
               [--version <x.y.z>] [--icon <file.ico|file.png>] [--allow-default-icon]
-              [--out <folder>] [--level <1-22>]
+              [--out <folder>] [--level <1-22>] [--webview2-bootstrapper <MicrosoftEdgeWebview2Setup.exe>]
   gloria-pack --inspect <exe>
 
   --app        Folder with the app's files (main_exe must be inside).
@@ -20,6 +20,9 @@ USAGE:
   --allow-default-icon
                With no icon, keep the GloriaSetup icon and mark the build TEST BUILD.
   --out        Output folder (default: dist).
+  --webview2-bootstrapper
+               Bundle Microsoft's WebView2 Evergreen bootstrapper (needs_webview2 apps). Setup runs it only
+               when the runtime is missing; without it such a setup exits 5 on a PC with no WebView2.
   --inspect    Print the icon sizes, version info and payload of a built exe.
 ";
 
@@ -44,6 +47,7 @@ fn run() -> Result<(), String> {
     let mut out = PathBuf::from("dist");
     let mut level = 19;
     let mut inspect = None;
+    let mut webview2: Option<PathBuf> = None;
     while let Some(a) = args.next() {
         let mut val = || args.next().ok_or_else(|| format!("{a} needs a value"));
         match a.as_str() {
@@ -55,6 +59,7 @@ fn run() -> Result<(), String> {
             "--allow-default-icon" => allow_default_icon = true,
             "--out" => out = PathBuf::from(val()?),
             "--level" => level = val()?.parse().map_err(|_| "--level must be a number".to_string())?,
+            "--webview2-bootstrapper" => webview2 = Some(PathBuf::from(val()?)),
             "--inspect" => inspect = Some(PathBuf::from(val()?)),
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -94,6 +99,7 @@ fn run() -> Result<(), String> {
         allow_default_icon,
         out_dir: out,
         level,
+        webview2_bootstrapper: webview2,
     })?;
     let size = std::fs::metadata(&packed.setup).map(|m| m.len()).unwrap_or(0);
     println!(

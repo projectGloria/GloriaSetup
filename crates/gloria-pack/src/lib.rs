@@ -10,7 +10,7 @@ pub mod resources;
 use std::path::{Path, PathBuf};
 
 use gloria_core::archive::{self, FileEntry};
-use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, PUBLISHER, UNINSTALLER_NAME, WORK_DIR};
+use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, PUBLISHER, UNINSTALLER_NAME, WEBVIEW2_DIR, WEBVIEW2_SETUP_NAME, WORK_DIR};
 use gloria_core::payload::{self, FLAG_TEST_BUILD, FLAG_UNINSTALLER};
 use gloria_core::res::{self, IconImage, RT_VERSION};
 
@@ -27,6 +27,8 @@ pub struct Options {
     pub out_dir: PathBuf,
     /// zstd level (default 19).
     pub level: i32,
+    /// The WebView2 Evergreen bootstrapper to bundle (apps with `needs_webview2`). Run only if the runtime is missing.
+    pub webview2_bootstrapper: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -96,7 +98,7 @@ pub fn pack(o: &Options) -> Result<Packed, String> {
     if !o.app_dir.is_dir() {
         return Err(format!("app folder {} does not exist", o.app_dir.display()));
     }
-    for reserved in [UNINSTALLER_NAME, INSTALL_MANIFEST_NAME, WORK_DIR] {
+    for reserved in [UNINSTALLER_NAME, INSTALL_MANIFEST_NAME, WORK_DIR, WEBVIEW2_DIR] {
         if o.app_dir.join(reserved).exists() {
             return Err(format!(
                 "the app folder contains {reserved:?}, which GloriaSetup writes itself; remove it from {}",
@@ -133,6 +135,19 @@ pub fn pack(o: &Options) -> Result<Packed, String> {
     for (rel, path) in archive::list_dir(&o.app_dir).map_err(|e| format!("{}: {e}", o.app_dir.display()))? {
         let data = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         files.push((rel, data));
+    }
+
+    // The WebView2 bootstrapper rides in the archive under a reserved folder the engine never installs.
+    match (&o.webview2_bootstrapper, app.needs_webview2) {
+        (Some(p), true) => {
+            let data = std::fs::read(p).map_err(|e| format!("webview2 bootstrapper {}: {e}", p.display()))?;
+            if !data.starts_with(b"MZ") {
+                return Err(format!("webview2 bootstrapper {} is not an exe", p.display()));
+            }
+            files.push((format!("{WEBVIEW2_DIR}\\{WEBVIEW2_SETUP_NAME}"), data));
+        }
+        (Some(_), false) => return Err("--webview2-bootstrapper needs `needs_webview2 = true` in gloria.toml".into()),
+        (None, _) => {}
     }
 
     let mut runtime = RuntimeManifest {

@@ -174,7 +174,14 @@ target\release\gloria-pack.exe --app C:\Users\you\staging\OmniConvert --manifest
 
 - Try it in the Sandbox first, then on your PC.
 - Check the same things as in step 2, with the app's own name, icon, accent colour and data folders.
-- Uninstall the app's old NSIS or MSI install first. The guided migration from those arrives in milestone 2.
+- **Migration from an old installer:** install the app's previous NSIS, MSI or Inno build first, then run the new
+  setup. It opens on the migrate screen, names the old install (and says "all users" when it needs admin), backs up
+  the data folders, runs the old uninstaller (a UAC prompt only for all-users installs; declining stops with code 4)
+  and installs. The app's settings survive unless you tick the data box. Try an all-users (HKLM) install in the
+  Sandbox: the automated tests don't cover that path.
+- **WebView2:** for `needs_webview2` apps, pass `--webview2-bootstrapper <MicrosoftEdgeWebview2Setup.exe>` (download it
+  from Microsoft yourself). Where the runtime is missing, the setup runs it first. Without network it fails, and the
+  setup exits with code 5 and leaves nothing installed.
 - **GloriaLauncher detection:** start GloriaLauncher after installing. The app shows as installed with the right
   version, and Launch and Uninstall work from there. GloriaLauncher only lists apps in its catalogue, so the dummy
   never shows up there. The dummy only proves the registry fields.

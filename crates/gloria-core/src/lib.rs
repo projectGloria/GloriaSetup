@@ -5,6 +5,7 @@ pub mod cli;
 pub mod exit;
 pub mod install_manifest;
 pub mod journal;
+pub mod legacy;
 pub mod manifest;
 pub mod paths;
 pub mod payload;

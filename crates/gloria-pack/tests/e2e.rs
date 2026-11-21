@@ -71,6 +71,11 @@ impl TestApp {
 
     /// Packs version `v` (0.1.0 carries an extra file that later versions drop) with `ico`.
     fn pack(&self, v: &str, ico: &str) -> PathBuf {
+        self.pack_with(v, ico, "", None)
+    }
+
+    /// `pack` with extra gloria.toml lines and an optional WebView2 bootstrapper to bundle.
+    fn pack_with(&self, v: &str, ico: &str, extra_toml: &str, webview2: Option<PathBuf>) -> PathBuf {
         let (stub, dummy) = built();
         let app = self.work.join(format!("app-{v}"));
         let _ = std::fs::remove_dir_all(&app);
@@ -85,7 +90,7 @@ impl TestApp {
         std::fs::write(
             &manifest,
             format!(
-                "id = \"{}\"\nname = \"{}\"\nversion = \"0.0.0\"\nmain_exe = \"dummy.exe\"\ndata_folders = ['%APPDATA%\\{}']\n",
+                "id = \"{}\"\nname = \"{}\"\nversion = \"0.0.0\"\nmain_exe = \"dummy.exe\"\ndata_folders = ['%APPDATA%\\{}']\n{extra_toml}",
                 self.id,
                 self.name,
                 self.data.file_name().unwrap().to_string_lossy()
@@ -102,6 +107,7 @@ impl TestApp {
             allow_default_icon: false,
             out_dir: out,
             level: 3,
+            webview2_bootstrapper: webview2,
         })
         .unwrap();
         p.setup
@@ -519,4 +525,162 @@ fn relaunch_starts_the_app_only_when_asked() {
         std::thread::sleep(Duration::from_millis(200));
     }
     assert!(std::fs::read_to_string(&settings).unwrap().contains("0.1.0"));
+}
+
+// ───────────────────────────── legacy migration ─────────────────────────────
+
+/// A fake install by an older installer: a folder with the app and an uninstaller (the dummy in its fake-uninstaller
+/// mode), registered under a non-projectGloria key in HKCU. The key is deleted on drop.
+struct LegacyInstall {
+    key: String,
+    dir: PathBuf,
+}
+
+impl LegacyInstall {
+    /// `nsis` marks the uninstaller with the NSIS signature, so the setup runs it as `/S _?=<dir>`; otherwise it is
+    /// registered with a `QuietUninstallString`.
+    fn new(t: &TestApp, nsis: bool) -> LegacyInstall {
+        let (_, dummy) = built();
+        let dir = t.work.join("Old Install");
+        std::fs::create_dir_all(dir.join("resources")).unwrap();
+        std::fs::copy(dummy, dir.join("dummy.exe")).unwrap();
+        std::fs::write(dir.join(r"resources\old.dat"), "old").unwrap();
+        let un = dir.join("uninstall.exe");
+        let mut bytes = std::fs::read(dummy).unwrap();
+        if nsis {
+            bytes.extend_from_slice(b"\0NullsoftInst\0");
+        }
+        std::fs::write(&un, bytes).unwrap();
+        let key = format!(r"{UNINSTALL}\{}", t.name);
+        let add = |v: &str, d: &str| {
+            let o = Command::new("reg").args(["add", &key, "/v", v, "/t", "REG_SZ", "/d", d, "/f"]).output().unwrap();
+            assert!(o.status.success(), "reg add {v}");
+        };
+        add("DisplayName", &format!("{} 0.9.0", t.name));
+        add("DisplayVersion", "0.9.0");
+        add("Publisher", "Somebody Else");
+        add("InstallLocation", &dir.to_string_lossy());
+        add("UninstallString", &format!("\"{}\"", un.display()));
+        if !nsis {
+            add("QuietUninstallString", &format!("\"{}\" /S", un.display()));
+        }
+        LegacyInstall { key, dir }
+    }
+
+    fn registered(&self) -> bool {
+        Command::new("reg").args(["query", &self.key]).output().unwrap().status.success()
+    }
+}
+
+impl Drop for LegacyInstall {
+    fn drop(&mut self) {
+        let _ = Command::new("reg").args(["delete", &self.key, "/f"]).output();
+    }
+}
+
+#[test]
+fn silent_setup_removes_an_old_install_and_keeps_the_data() {
+    let t = TestApp::new("Legacy");
+    let old = LegacyInstall::new(&t, false);
+    t.make_data();
+    let setup = t.pack("0.1.0", "dummy-a.ico");
+    let data = t.data.to_string_lossy().into_owned();
+    // The fake uninstaller also wipes the data folder, like some do; the setup must put it back.
+    let env = [("GLORIA_TEST_NO_HKLM", "1"), ("GLORIA_DUMMY_LEGACY_KEY", old.key.as_str()), ("GLORIA_DUMMY_LEGACY_WIPE", data.as_str())];
+
+    assert_eq!(run_env(&setup, &["/S", "--dry-run"], &env), 0);
+    assert!(old.registered() && old.dir.join("dummy.exe").exists(), "dry run changed nothing");
+
+    assert_eq!(run_env(&setup, &["/S"], &env), 0);
+    assert!(!old.registered(), "old entry removed");
+    // The fake can't delete its own running exe (real ones do it from a %TEMP% copy); nothing else is left, and the
+    // setup doesn't touch files it didn't put there.
+    assert_eq!(app_files(&old.dir), ["uninstall.exe"], "old files removed");
+    assert!(t.has_key());
+    assert_eq!(t.reg("DisplayVersion").as_deref(), Some("0.1.0"));
+    assert!(t.data.join(r"sub\settings.json").exists(), "data restored after the old uninstaller wiped it");
+    let logs = t.logs();
+    assert!(logs.contains("legacy install:") && logs.contains("backed up"), "{logs}");
+    let tmp_backup = std::env::temp_dir().join(format!("GloriaSetup-backup-{}", t.id));
+    assert!(!tmp_backup.exists(), "backup deleted");
+}
+
+#[test]
+fn silent_setup_replaces_an_nsis_install_in_place_and_purge_drops_the_data() {
+    let t = TestApp::new("LegacyNsis");
+    let old = LegacyInstall::new(&t, true);
+    t.make_data();
+    let setup = t.pack("0.1.0", "dummy-a.ico");
+    let env = [("GLORIA_TEST_NO_HKLM", "1"), ("GLORIA_DUMMY_LEGACY_KEY", old.key.as_str())];
+    let d = old.dir.to_string_lossy().into_owned();
+
+    // /D at the old folder installs right there, not in "<old folder>\<Name>", even though it isn't empty yet.
+    assert_eq!(run_env(&setup, &["/S", "/PURGE", &format!("/D={d}")], &env), 0);
+    assert!(!old.registered());
+    assert!(t.logs().contains("_?="), "NSIS uninstaller run in place");
+    let f = app_files(&old.dir);
+    assert!(f.contains(&"dummy.exe".to_string()) && f.contains(&"install-manifest.json".to_string()), "{f:?}");
+    assert!(!f.iter().any(|x| x.starts_with("resources")), "old files gone: {f:?}");
+    assert_eq!(t.reg("InstallLocation").as_deref(), Some(d.as_str()));
+    assert!(!t.data.exists(), "/PURGE removes the data");
+
+    // Our own key now wins: a second run is a plain reinstall with no migration.
+    assert_eq!(run_env(&setup, &["/S"], &env), 0);
+    assert_eq!(t.reg("InstallLocation").as_deref(), Some(d.as_str()));
+}
+
+// ───────────────────────────── WebView2 ─────────────────────────────
+
+#[test]
+fn missing_webview2_is_installed_first_and_a_failed_bootstrapper_exits_5() {
+    let t = TestApp::new("WebView2");
+    let (_, dummy) = built();
+    let setup = t.pack_with("0.1.0", "dummy-a.ico", "needs_webview2 = true\n", Some(dummy.clone()));
+    let marker = t.work.join("webview2-runtime");
+    let m = marker.to_string_lossy().into_owned();
+    let d = t.install.to_string_lossy().into_owned();
+
+    // The bootstrapper fails: exit 5, nothing installed.
+    let fail = [("GLORIA_TEST_WEBVIEW2", m.as_str()), ("GLORIA_DUMMY_WEBVIEW2_FAIL", "1")];
+    assert_eq!(run_env(&setup, &["/S", &format!("/D={d}")], &fail), 5);
+    assert!(!t.has_key());
+    assert!(files(&t.install).is_empty(), "nothing left in the folder: {:?}", files(&t.install));
+
+    // It works: the runtime appears, the install goes on, and the bootstrapper itself is never installed.
+    let ok = [("GLORIA_TEST_WEBVIEW2", m.as_str())];
+    assert_eq!(run_env(&setup, &["/S", &format!("/D={d}")], &ok), 0);
+    assert!(marker.exists());
+    assert!(t.has_key());
+    assert!(!app_files(&t.install).iter().any(|f| f.to_lowercase().contains("webview2")), "{:?}", app_files(&t.install));
+
+    // Present now: the bootstrapper isn't run again (it would fail).
+    assert_eq!(run_env(&setup, &["/S"], &fail), 0);
+}
+
+#[test]
+fn bootstrapper_needs_needs_webview2() {
+    let t = TestApp::new("WebView2Pack");
+    let (stub, dummy) = built();
+    let app = t.work.join("app");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::copy(dummy, app.join("dummy.exe")).unwrap();
+    let manifest = t.work.join("gloria.toml");
+    let toml = |extra: &str| format!("id = \"{}\"\nname = \"{}\"\nversion = \"0.1.0\"\nmain_exe = \"dummy.exe\"\n{extra}", t.id, t.name);
+    let o = |bootstrapper: PathBuf| Options {
+        stub: stub.clone(),
+        app_dir: app.clone(),
+        manifest: manifest.clone(),
+        version: None,
+        icon: Some(root().join("examples/dummy/icons/dummy-a.ico")),
+        allow_default_icon: false,
+        out_dir: t.work.join("dist"),
+        level: 3,
+        webview2_bootstrapper: Some(bootstrapper),
+    };
+    std::fs::write(&manifest, toml("")).unwrap();
+    assert!(pack(&o(dummy.clone())).unwrap_err().contains("needs_webview2"));
+    std::fs::write(&manifest, toml("needs_webview2 = true\n")).unwrap();
+    assert!(pack(&o(manifest.clone())).unwrap_err().contains("not an exe"));
+    let p = pack(&o(dummy.clone())).unwrap();
+    assert!(p.files.iter().any(|f| f.path.ends_with("MicrosoftEdgeWebview2Setup.exe")), "bundled");
 }
