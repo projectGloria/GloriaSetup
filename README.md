@@ -1,253 +1,231 @@
-<p align="center"><img src="assets/brand/GloriaSetup.png" width="128" alt="GloriaSetup"></p>
+<div align="center">
 
-<h1 align="center">GloriaSetup</h1>
+<img src="assets/brand/GloriaSetup.png" width="110" alt="GloriaSetup icon" />
 
-<p align="center">A per-user Windows installer for projectGloria apps. No admin, one small exe, styled like GloriaLauncher.</p>
+# GloriaSetup
 
-- **Stub** (`crates/gloria-stub`): the setup and uninstaller, a Win32 + Direct2D app in English, French, Spanish
-  and Turkish.
-- **`gloria-pack`** (`crates/gloria-pack`): turns the stub, an app folder and a `gloria.toml` into
-  `<Name>_<version>_x64-setup.exe`, with the app's own icon.
-- **GitHub Action** (`action.yml`): packs, optionally signs and uploads the setup in an app's release job.
+Per-user Windows installer stub, packager CLI, and GitHub Action for projectGloria apps — no admin rights, single executable.
 
-How it works: [docs/design.md](docs/design.md). Approved screens: [design/mockups/index.html](design/mockups/index.html).
+<img src="https://img.shields.io/badge/Rust-1.80%2B-468437?style=flat-square" alt="Rust 1.80+" />
+<img src="https://img.shields.io/badge/version-0.2.0-2b2d34?style=flat-square" alt="Version" />
+<img src="https://img.shields.io/badge/Windows-x64-2b2d34?style=flat-square" alt="Platform" />
+<img src="https://img.shields.io/github/last-commit/projectGloria/GloriaSetup?style=flat-square&color=468437" alt="Last commit" />
 
-## Build
+<br /><br />
 
-Needs Rust 1.80+ (msvc, x64) on Windows 10/11.
+<img src="assets/banner.svg" alt="GloriaSetup banner" width="100%" />
+
+<br /><br />
+
+[Features](#features) • [Screenshots](#screenshots) • [How it works](#how-it-works) • [Installation](#installation) • [Usage](#usage) • [Configuration](#configuration) • [Troubleshooting](#troubleshooting)
+
+</div>
+
+## About
+
+GloriaSetup is a Windows x64 installer toolchain written in Rust (`windows` 0.62) consisting of a native Win32/Direct2D setup stub (`gloria-stub`), a packager CLI (`gloria-pack`), a shared core library (`gloria-core`), an npm distribution (`gloria-setup`), and a composite GitHub Action (`action.yml`). It packages an application directory and a `gloria.toml` manifest into a single zstd-compressed `<Name>_<version>_x64-setup.exe` that installs per-user under `%LOCALAPPDATA%\Programs\<App>` and registers only under `HKCU` with no administrator privileges required (elevation is requested only when migrating a legacy all-users `HKLM` installation). Full architecture details are documented in [docs/design.md](docs/design.md).
+
+## Features
+
+- **Per-user installs without UAC** — Installs to `%LOCALAPPDATA%\Programs\<Name>` (or a validated custom folder) and writes uninstall metadata exclusively to `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\projectGloria.<id>` for Windows Settings and GloriaLauncher.
+- **Native Win32 + Direct2D UI** — Renders a 640×440 frameless dark-mode installer using Direct2D/DirectWrite with software-renderer (WARP) support, per-app accent theming, and built-in translations for English (`en`), French (`fr`), Spanish (`es`), and Turkish (`tr`).
+- **Crash-safe journaled commits** — Stages payloads into `<dir>\.gloria\staging`, records a commit journal before swapping files with `.gloria\backup`, and automatically rolls back interrupted installs or updates on the next run.
+- **Safe updates, downgrades, and uninstalls** — Removes only files tracked in `install-manifest.json`, preserves user data in `data_folders` unless `/PURGE` or the off-by-default data removal checkbox is selected, refuses silent downgrades without `/ALLOWDOWNGRADE`, and self-deletes `uninstall.exe` via a `%TEMP%` trampoline.
+- **Legacy migration and optional WebView2** — Detects prior NSIS/MSI/Inno installs, backs up `data_folders` before running legacy uninstallers, and optionally bundles `MicrosoftEdgeWebview2Setup.exe` to run only when WebView2 is missing.
+- **Resource patching and Authenticode signing** — Replaces the stub's PE icons and version info with the target app's own assets, appends the `GLSETUP\0` tar/zstd payload, and signs `uninstall.exe` and the final setup via `signtool.exe`.
+- **CI and npm distribution** — Ships as a composite GitHub Action (`action.yml`) that downloads checksum-verified binaries and attaches setups to GitHub Releases, plus the `gloria-setup` npm package with CLI and JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
+
+## Screenshots
+
+<p align="center">
+  <img src="assets/11.png" alt="GloriaSetup ready-to-install screen" width="640" />
+  <br />
+  <em>Welcome screen displaying the packaged app's icon, version badge, install location, unpacked size, and options toggle.</em>
+</p>
+
+<p align="center">
+  <img src="assets/22.png" alt="GloriaSetup installation progress screen" width="640" />
+  <br />
+  <em>Installation progress screen showing percentage, active file path, four-stage checklist, and cancel control.</em>
+</p>
+
+<p align="center">
+  <img src="assets/33.png" alt="GloriaSetup completion screen" width="640" />
+  <br />
+  <em>Completion screen confirming installed version and location with direct launch and close actions.</em>
+</p>
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["App Folder + gloria.toml"] --> B["gloria-pack"]
+    B --> C["Patch PE Icon & Version Info"]
+    C --> D["Append GLSETUP Header + tar/zstd Payload"]
+    D --> E{"Sign PFX Provided?"}
+    E -- "Yes" --> F["Sign uninstall.exe & Setup via signtool"]
+    E -- "No" --> G["Unsigned Setup EXE"]
+    F --> H["Run Setup EXE (UI or /S)"]
+    G --> H
+    H --> I["Stage to .gloria/staging & Write Journal"]
+    I --> J["Swap Files & Write HKCU Uninstall Key"]
+    J --> K["Delete Journal & Launch App"]
+```
+
+## Installation
+
+### Via npm (Windows x64)
+
+```powershell
+npm install --save-dev gloria-setup
+```
+
+The `gloria-setup` package bundles `gloria-pack.exe` and `gloria-stub.exe` and exposes `npx gloria-pack` alongside a JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
+
+### From source
+
+Requires Rust 1.80+ (`x86_64-pc-windows-msvc`) on Windows 10/11:
 
 ```powershell
 cargo build --release -p gloria-stub -p gloria-pack
 cargo test --workspace
 ```
 
-## Install via npm
-
-```powershell
-npm install --save-dev gloria-setup
-npx gloria-pack --app path\to\built\app --manifest path\to\gloria.toml --version 1.2.0 --out dist
-```
-
-The `gloria-setup` npm package bundles `gloria-pack.exe` and `gloria-stub.exe` directly (Windows x64) and also exports a JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
-
-## Pack an app
-
-```powershell
-target\release\gloria-pack.exe --app path\to\built\app --manifest path\to\gloria.toml `
-  --version 1.2.0 --stub target\release\gloria-stub.exe --out dist
-```
-
-`gloria.toml` is described in [docs/design.md § App manifest](docs/design.md#app-manifest-gloriatoml-in-the-app-repo).
-`gloria-pack --inspect <setup.exe>` prints what a setup contains.
-
-### Signing
-
-```powershell
-$env:GLORIA_SIGN_PASSWORD = '<pfx password>'
-target\release\gloria-pack.exe --app ... --sign-pfx C:\Users\you\cert.pfx --timestamp-url http://timestamp.digicert.com
-```
-
-`gloria-pack` signs `uninstall.exe` before it goes into the archive and the setup after its payload is appended,
-then checks the signed setup still finds its payload. signtool comes from `PATH` or the newest Windows SDK
-(`--signtool` to choose). Without a certificate the setup is unsigned and SmartScreen may warn until it builds
-reputation.
-
-## Use it in an app's release
+### In GitHub Actions
 
 ```yaml
 jobs:
   setup:
     runs-on: windows-latest
     permissions:
-      contents: write          # to attach the setup to the release
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      # ... build the app into app-dist\ ...
-      - uses: projectGloria/GloriaSetup@v0.1.0
+      # Build your app into app-dist\
+      - uses: projectGloria/GloriaSetup@v0.2.0
         with:
           app-dir: app-dist
           manifest: gloria.toml
-          certificate: ${{ secrets.WINDOWS_PFX_BASE64 }}             # optional; empty = unsigned
+          certificate: ${{ secrets.WINDOWS_PFX_BASE64 }}
           certificate-password: ${{ secrets.WINDOWS_PFX_PASSWORD }}
 ```
 
-Run for a tag (`v1.2.0`), it packs version `1.2.0` and attaches `<Name>_1.2.0_x64-setup.exe` to that tag's release,
-which must already exist. At a version tag it downloads that GloriaSetup release's `gloria-pack.exe` and stub and
-checks their SHA-256; at a branch or commit it builds them from source. Other inputs: `version`, `icon`,
-`webview2-bootstrapper`, `out-dir`, `timestamp-url`, `upload` (`auto`/`true`/`false`), `release-tag`,
-`gloria-setup-version`. Outputs: `setup-path`, `setup-name`, `signed`. All in [action.yml](action.yml).
+When run on a tag (for example `v1.2.0`), the action packs version `1.2.0` and attaches `<Name>_1.2.0_x64-setup.exe` to that tag's existing GitHub Release. At a release tag it downloads `gloria-pack.exe` and `gloria-stub.exe` and verifies `SHA256SUMS.txt`; at a branch or commit it builds them from source.
 
-Releasing GloriaSetup itself: bump `version` in `Cargo.toml` and `npm/package.json`, push, then push the tag `v<version>`. The release
-workflow tests, builds and publishes `gloria-pack.exe`, `gloria-stub.exe` and `SHA256SUMS.txt` to GitHub Releases and publishes `gloria-setup` to npm.
+## Usage
 
-## Setup command line
-
-| Flag | Meaning |
-|---|---|
-| `/S` | silent install or uninstall |
-| `/D=<path>` | install folder (must be last; spaces need no quotes) |
-| `/PURGE` | silent uninstall or clean reinstall also removes user data |
-| `/ALLOWDOWNGRADE` | silent install may install an older version |
-| `/RELAUNCH` | start the app after a silent install |
-| `--dry-run` | log every action, change nothing |
-
-Exit codes: 0 ok, 1 error, 2 downgrade refused, 3 app could not be closed or files locked, 4 elevation cancelled
-(legacy migration), 5 WebView2 failed, 6 invalid arguments or install folder.
-Each run logs to `%TEMP%\GloriaSetup-<id>-<timestamp>.log`.
-
-Run setups with flags from PowerShell or cmd. Git Bash rewrites `/S` into a path.
-
-## How to test
-
-Work through these in order. Each step only needs the one before it.
-
-### 1. Preview the screens (changes nothing)
+### Pack an application
 
 ```powershell
-cargo build --release -p gloria-stub
+target\release\gloria-pack.exe `
+  --app path\to\built\app `
+  --manifest path\to\gloria.toml `
+  --version 1.2.0 `
+  --stub target\release\gloria-stub.exe `
+  --out dist
+```
+
+Inspect the icons, version metadata, and payload summary of any built installer:
+
+```powershell
+target\release\gloria-pack.exe --inspect dist\MyApp_1.2.0_x64-setup.exe
+```
+
+### Sign an installer
+
+Pass the certificate password through `GLORIA_SIGN_PASSWORD` (never as a CLI argument):
+
+```powershell
+$env:GLORIA_SIGN_PASSWORD = '<pfx password>'
+target\release\gloria-pack.exe `
+  --app path\to\built\app `
+  --manifest path\to\gloria.toml `
+  --version 1.2.0 `
+  --sign-pfx C:\Users\you\cert.pfx `
+  --timestamp-url http://timestamp.digicert.com
+```
+
+`gloria-pack` signs `uninstall.exe` before archiving it, signs the final setup after appending the payload, and verifies that the signed setup still locates its payload. `signtool.exe` is resolved from `PATH`, the newest Windows SDK, or `--signtool`.
+
+### Setup command-line flags
+
+Run setups with slash flags from PowerShell or `cmd.exe`:
+
+```powershell
+(Start-Process .\MyApp_1.2.0_x64-setup.exe -ArgumentList '/S /D=C:\Users\you\Apps\MyApp' -Wait -PassThru).ExitCode
+```
+
+| Flag | Behavior |
+| --- | --- |
+| `/S` | Silent install or uninstall |
+| `/D=<path>` | Custom install folder (must be the last argument; spaces need no quotes) |
+| `/PURGE` | Also delete configured `data_folders` during silent uninstall or clean reinstall |
+| `/ALLOWDOWNGRADE` | Permit installing an older version during a silent install |
+| `/RELAUNCH` | Start the installed app after a silent install completes |
+| `--dry-run` | Log every planned file, shortcut, and registry action without modifying disk or registry |
+
+**Exit codes:** `0` success, `1` general error, `2` downgrade refused, `3` running app could not be closed or files locked, `4` UAC elevation declined during legacy migration, `5` WebView2 bootstrapper failed, `6` invalid CLI arguments or disallowed install path.
+
+### Preview UI and local testing
+
+Preview all screens and languages without installing anything:
+
+```powershell
 target\release\gloria-stub.exe --preview
 target\release\gloria-stub.exe --preview --page uninstall --lang tr
 target\release\gloria-stub.exe --preview --manifest examples\dummy\gloria.toml --icon examples\dummy\icons\dummy-a.ico
 target\release\gloria-stub.exe --screenshot out\shots
 ```
 
-- Pages: `welcome`, `options`, `options-error`, `progress`, `done`, `update`, `update-running`, `reinstall`,
-  `downgrade`, `migrate`, `uninstall`, `uninstall-progress`, `uninstall-done`, `error`.
-- Buttons work and jobs are simulated. Nothing is installed.
-- `--screenshot` writes every page in every language to `out\shots\<lang>\<page>.png`, plus `update-waiting`,
-  `update-stuck` and `welcome-link-hover` (the footer's GitHub link in its hover state). Compare them with the mockups.
-- Running the bare stub with no flags also opens the preview. It is the only exe that shows the GloriaSetup icon.
-
-### 2. Install, update and uninstall the dummy app on your PC
+Build the bundled dummy installers (`0.1.0` and `0.2.0`) or launch them inside Windows Sandbox:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File examples\dummy\pack.ps1
+powershell -ExecutionPolicy Bypass -File sandbox\run.ps1
 ```
 
-This builds `dist\dummy\GloriaSetupDummy_0.1.0_x64-setup.exe` (packed with icon A) and `..._0.2.0_...` (icon B).
-`dummy.exe` itself always carries icon A, the way a real app exe carries its own icon. The dummy app shows its version in a message box and counts its runs in `%APPDATA%\com.gloria.dummy\settings.json`.
+## Configuration
 
-**Install 0.1.0.** Run the 0.1.0 setup from Explorer, keep the default folder, tick "Launch when done". Check:
+### App manifest (`gloria.toml`)
 
-- **Explorer:** both setup exes show their own icons (A and B), not the GloriaSetup icon. File properties → Details
-  show "GloriaSetup Dummy Setup", the version and "projectGloria".
-- **Install folder:** `C:\Users\you\AppData\Local\Programs\GloriaSetup Dummy` has `dummy.exe`, `uninstall.exe` (with
-  icon A), `version.txt`, `docs\`, `old-notes.txt` and `install-manifest.json`.
-- **Start Menu:** "GloriaSetup Dummy" with icon A (from `dummy.exe`) starts the app. A desktop shortcut exists only if you ticked it.
-- **Settings → Apps → Installed apps:** "GloriaSetup Dummy" with icon A, version 0.1.0, publisher projectGloria, a size, and
-  Uninstall works.
-- **regedit:** `HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Uninstall\projectGloria.GloriaDummy` has
-  `DisplayName` = `GloriaSetup Dummy`, `DisplayVersion` = `0.1.0` (no `v`), `InstallLocation` (no quotes),
-  `DisplayIcon` = the bare path to `dummy.exe`, `UninstallString` = the quoted `uninstall.exe`, `QuietUninstallString`
-  = the same + ` /S`, `Publisher` = `projectGloria`, `EstimatedSize`, `NoModify` = 1, `NoRepair` = 1, `GloriaSetup`.
-  Nothing is written under HKLM.
-- **Data folder:** run the app once, then `%APPDATA%\com.gloria.dummy\settings.json` exists.
-
-**Update to 0.2.0.** Run the 0.2.0 setup. It opens on the update screen (0.1.0 → 0.2.0). Try it once with the dummy
-still open to see the "close the app" prompt. After the update:
-
-- The app says 0.2.0, `old-notes.txt` is gone, the run count in `settings.json` kept going.
-- A file you put in the install folder yourself (say `mine.txt`) is still there.
-- regedit and Settings show 0.2.0. `uninstall.exe` now shows icon B (the setup's
-  icon). The Start Menu entry keeps icon A because it comes from `dummy.exe`.
-
-**Reinstall and downgrade.** Run 0.2.0 again: the reinstall screen offers Repair or Uninstall. Run 0.1.0: the
-downgrade screen warns first. Silent downgrades are refused:
-
-```powershell
-(Start-Process dist\dummy\GloriaSetupDummy_0.1.0_x64-setup.exe -ArgumentList '/S' -Wait -PassThru).ExitCode   # 2
+```toml
+id = "GloriaDummy"
+name = "GloriaSetup Dummy"
+version = "0.1.0"
+main_exe = "dummy.exe"
+icon = "icons/dummy-a.ico"
+accent = "#5b8def"
+description = "Test app for GloriaSetup"
+needs_webview2 = false
+data_folders = ['%APPDATA%\com.gloria.dummy']
+legacy_names = []
 ```
 
-**Uninstall.** Use Settings → Apps → Uninstall (or the Start Menu, or `uninstall.exe`).
+| Field | Required | Description |
+| --- | --- | --- |
+| `id` | Yes | 1–64 chars (`A–Z`, `a–z`, `0–9`, `.`, `_`, `-`, not starting with `.`); used for `projectGloria.<id>` registry key |
+| `name` | Yes | Single-line display name shown in the UI, Start Menu, and Settings → Apps |
+| `version` | Yes | SemVer string without leading `v` (overridable via `--version`) |
+| `main_exe` | Yes | Relative path to the main `.exe` inside `--app` (cannot start with `unins`) |
+| `icon` | No | Path to `.ico` or `.png` (overridable via `--icon`; use `--allow-default-icon` for test builds) |
+| `accent` | No | `#rrggbb` UI accent color (defaults to `#9a9aa6`) |
+| `description` | No | Short subtitle shown on the welcome screen |
+| `needs_webview2` | No | When `true`, checks for WebView2 Runtime and runs the bundled `--webview2-bootstrapper` if missing |
+| `data_folders` | No | User data paths under `%APPDATA%\`, `%LOCALAPPDATA%\`, or `%USERPROFILE%\` backed up on migration and deleted only on purge |
+| `legacy_names` | No | Legacy `DisplayName` entries to detect and migrate when `projectGloria.<id>` is not yet installed |
+| `app_user_model_id` | No | Optional Windows AppUserModelID written to the Start Menu shortcut |
+| `context_menu` | No | Optional per-user Explorer context-menu label for folders, backgrounds, and drives |
 
-- Leave "Also remove my settings and data" unticked. Afterwards the install folder holds only your `mine.txt`, the
-  Start Menu entry and registry key are gone, and `%APPDATA%\com.gloria.dummy` is still there.
-- After a few seconds no `GloriaSetup-GloriaDummy-*.exe` is left in `%TEMP%`. That is the uninstaller's temp copy,
-  which deletes itself.
-- Install again and uninstall with the box ticked: the data folder is gone too.
+### GitHub Action inputs and outputs
 
-**Silent run and dry run:**
+Key inputs in [action.yml](action.yml): `app-dir` (required), `manifest`, `version`, `icon`, `webview2-bootstrapper`, `out-dir` (default `dist`), `certificate`, `certificate-password`, `timestamp-url` (default `http://timestamp.digicert.com`), `upload` (`auto`/`true`/`false`), `release-tag`, `gloria-setup-version`, `token`.
+Outputs: `setup-path`, `setup-name`, `signed`.
 
-```powershell
-$s = 'dist\dummy\GloriaSetupDummy_0.2.0_x64-setup.exe'
-(Start-Process $s -ArgumentList '/S --dry-run' -Wait -PassThru).ExitCode                       # 0, nothing changes
-(Start-Process $s -ArgumentList '/S /D=C:\Users\you\Apps\Gloria Dummy' -Wait -PassThru).ExitCode
-$u = 'C:\Users\you\Apps\Gloria Dummy\uninstall.exe'
-(Start-Process $u -ArgumentList '/S' -Wait -PassThru).ExitCode                                 # 0, keeps data
-```
+## Troubleshooting
 
-Install silently again, then run `uninstall.exe` with `/S /PURGE` to remove the data folder too. Check the
-`%TEMP%\GloriaSetup-GloriaDummy-*.log` files: the dry run lists every file, shortcut and registry value it would write.
-
-`cargo test --workspace` runs the same install, update, reinstall, downgrade and uninstall flow automatically, with
-unique app ids, and cleans up after itself.
-
-### 3. Clean machine and software rendering: Windows Sandbox
-
-Windows Sandbox is a throwaway Windows desktop. It starts clean each time and has no GPU here, so Direct2D renders
-with WARP, the software renderer that VMs and remote desktops get.
-
-1. **Turn it on (once):** Windows 10/11 Pro, Enterprise or Education, with virtualization on in the BIOS. Open
-   "Turn Windows features on or off", tick **Windows Sandbox**, then reboot. This needs admin. Or, in an admin
-   PowerShell: `Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All`.
-2. **Start it:** build the dummy setups (step 2), then run:
-
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File sandbox\run.ps1
-   ```
-
-   The script copies the release stub to `dist\GloriaSetup-preview.exe` and fills this checkout's `dist` path into
-   [sandbox/GloriaSetup.wsb](sandbox/GloriaSetup.wsb). Windows Sandbox needs absolute paths, so open the `.wsb`
-   through the script. The sandbox opens with `Desktop\dist` in Explorer. It is read-only, has no network and has no
-   vGPU.
-3. **Check in the sandbox:**
-   - `GloriaSetup-preview.exe` renders every screen correctly: text, glow, icons and animations, no black or empty
-     areas. Resize, drag and close the window.
-   - `dummy\GloriaSetupDummy_0.1.0_x64-setup.exe` installs, then repeat the step 2 checks. Microsoft Defender may
-     scan the unsigned setup first. Without network, SmartScreen can't block it.
-   - Update to 0.2.0, then uninstall with and without data.
-4. Close the sandbox window to throw everything away.
-
-To move a log out, copy it from `%TEMP%` in the sandbox and paste it on your desktop. Clipboard sharing is on.
-
-### 4. Signing
-
-Make a throwaway self-signed certificate (Windows doesn't trust it, so the publisher still shows as unknown) and run
-the signing test, which packs, signs, installs and uninstalls:
-
-```powershell
-$env:GLORIA_SIGN_PASSWORD = 'test'
-powershell -ExecutionPolicy Bypass -File tools\make-test-cert.ps1 -Out target\test-sign.pfx
-$env:GLORIA_TEST_SIGN_PFX = (Resolve-Path target\test-sign.pfx).Path
-cargo test -p gloria-pack --test e2e signed
-```
-
-With those variables set, `gloria-pack ... --sign-pfx target\test-sign.pfx` signs a setup by hand. Check it with
-`Get-AuthenticodeSignature <setup.exe>` (it names `CN=GloriaSetup Test Signing`, with an untrusted root) or in file
-properties → Digital Signatures. CI does the same on every push, and also runs the action on the dummy app.
-
-### 5. A real app
-
-Pack a real projectGloria app, for example OmniConvert. Put the files the app needs at run time in one folder (for a
-Tauri app, the release exe plus any resources), and write a `gloria.toml` for it like the example in
-[docs/design.md](docs/design.md#app-manifest-gloriatoml-in-the-app-repo). Then:
-
-```powershell
-target\release\gloria-pack.exe --app C:\Users\you\staging\OmniConvert --manifest C:\Users\you\staging\gloria.toml `
-  --version 0.2.0 --stub target\release\gloria-stub.exe --out dist
-```
-
-- Try it in the Sandbox first, then on your PC.
-- Check the same things as in step 2, with the app's own name, icon, accent colour and data folders.
-- **Migration from an old installer:** install the app's previous NSIS, MSI or Inno build first, then run the new
-  setup. It opens on the migrate screen, names the old install (and says "all users" when it needs admin), backs up
-  the data folders, runs the old uninstaller (a UAC prompt only for all-users installs; declining stops with code 4)
-  and installs. The app's settings survive unless you tick the data box. The automated tests cover per-user old
-  installs only; the all-users (HKLM) path, with UAC accepted and declined, was checked by hand. Try a real
-  all-users installer in the Sandbox too.
-- **WebView2:** for `needs_webview2` apps, pass `--webview2-bootstrapper <MicrosoftEdgeWebview2Setup.exe>` (download it
-  from Microsoft yourself). Where the runtime is missing, the setup runs it first. Without network it fails, and the
-  setup exits with code 5 and leaves nothing installed.
-- **GloriaLauncher detection:** start GloriaLauncher after installing. The app shows as installed with the right
-  version, and Launch and Uninstall work from there. GloriaLauncher only lists apps in its catalogue, so the dummy
-  never shows up there. The dummy only proves the registry fields.
+- **Slash flags fail in Git Bash (`exit code 6`):** MSYS/Git Bash rewrites `/S` into a POSIX path. Run setups with flags from PowerShell (`Start-Process ... -ArgumentList '/S' -Wait -PassThru`) or `cmd.exe`.
+- **Disallowed install directory (`exit code 6`):** GloriaSetup refuses `%TEMP%`, `Program Files`, `Windows`, and overlapping `data_folders`. Choose a per-user directory such as `C:\Users\you\AppData\Local\Programs\<App>`.
+- **Running application or locked files (`exit code 3`):** Close the target application before retrying. In silent mode (`/S`), the stub waits a grace period and attempts to force-close matching processes before returning `3`.
+- **WebView2 installation fails (`exit code 5`):** For `needs_webview2 = true` apps, bundle `MicrosoftEdgeWebview2Setup.exe` via `--webview2-bootstrapper`. If the target machine lacks WebView2 and has no network access, the bootstrapper fails and nothing is left installed.
+- **SmartScreen warning on unsigned setups:** If `--sign-pfx` / `certificate` is omitted, the generated `.exe` is unsigned and Windows SmartScreen may warn until it builds reputation or is signed with a trusted certificate.
+- **Inspecting run logs:** Every real install, update, uninstall, or `--dry-run` writes a detailed log to `%TEMP%\GloriaSetup-<id>-<timestamp>.log`.

@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 320" width="1200" height="320" role="img" aria-label="GloriaSetup banner">
+  <defs>
+    <clipPath id="card-clip">
+      <rect x="0.5" y="0.5" width="1199" height="319" rx="18" />
+    </clipPath>
+    <radialGradient id="left-glow" cx="0%" cy="50%" r="55%" fx="0%" fy="50%">
+      <stop offset="0%" stop-color="#468437" stop-opacity="0.28" />
+      <stop offset="65%" stop-color="#468437" stop-opacity="0.06" />
+      <stop offset="100%" stop-color="#468437" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <g clip-path="url(#card-clip)">
+    <!-- Background -->
+    <rect x="0" y="0" width="1200" height="320" fill="#111216" />
+
+    <!-- Ambient left-edge glow -->
+    <rect x="0" y="0" width="760" height="320" fill="url(#left-glow)" />
+
+    <!-- Right geometric diagonal lines -->
+    <line x1="940" y1="-20" x2="1120" y2="340" stroke="#468437" stroke-opacity="0.22" stroke-width="1.5" />
+    <line x1="1010" y1="-20" x2="1190" y2="340" stroke="#468437" stroke-opacity="0.22" stroke-width="1.5" />
+    <line x1="1080" y1="-20" x2="1260" y2="340" stroke="#468437" stroke-opacity="0.22" stroke-width="1.5" />
+
+    <!-- Left accent bar -->
+    <rect x="4" y="40" width="8" height="240" rx="4" fill="#468437" />
+
+    <!-- Title & subtitle -->
+    <text x="56" y="118" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="52" font-weight="800" fill="#468437">GloriaSetup</text>
+    <text x="56" y="162" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="22" font-weight="400" fill="#D4D4D8">Per-user Windows installer for projectGloria apps — zero admin, single exe</text>
+
+    <!-- Feature pills -->
+    <g transform="translate(56, 224)">
+      <rect x="0" y="0" width="196" height="42" rx="10" fill="#181A20" stroke="#2C2F3A" stroke-width="1" />
+      <circle cx="22" cy="21" r="5" fill="#468437" />
+      <text x="38" y="26.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" fill="#E4E4E7">No Admin Required</text>
+    </g>
+
+    <g transform="translate(266, 224)">
+      <rect x="0" y="0" width="204" height="42" rx="10" fill="#181A20" stroke="#2C2F3A" stroke-width="1" />
+      <circle cx="22" cy="21" r="5" fill="#468437" />
+      <text x="38" y="26.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" fill="#E4E4E7">Direct2D Native UI</text>
+    </g>
+
+    <g transform="translate(484, 224)">
+      <rect x="0" y="0" width="204" height="42" rx="10" fill="#181A20" stroke="#2C2F3A" stroke-width="1" />
+      <circle cx="22" cy="21" r="5" fill="#468437" />
+      <text x="38" y="26.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" fill="#E4E4E7">Crash-Safe Updates</text>
+    </g>
+
+    <g transform="translate(702, 224)">
+      <rect x="0" y="0" width="148" height="42" rx="10" fill="#181A20" stroke="#2C2F3A" stroke-width="1" />
+      <circle cx="22" cy="21" r="5" fill="#468437" />
+      <text x="38" y="26.5" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="16" fill="#E4E4E7">4 Languages</text>
+    </g>
+  </g>
+
+  <!-- Outer border -->
+  <rect x="0.5" y="0.5" width="1199" height="319" rx="18" fill="none" stroke="#262830" stroke-width="1" />
+</svg>
