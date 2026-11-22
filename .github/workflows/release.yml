@@ -86,14 +86,13 @@ jobs:
         run: npm test
 
       - name: Publish to npm
-        shell: pwsh
+        if: ${{ !contains(github.ref_name, '-') }}
+        shell: bash
         working-directory: npm
-        run: |
-          $npmVer = [version](npm --version).Trim()
-          if ($npmVer -lt [version]'11.5.1') {
-            npm install -g npm@latest
-          }
-          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          $args = @('publish', '--access', 'public')
-          if ($v -like '*-*') { $args += '--tag', 'next' }
-          npm @args
+        run: npm publish --access public
+
+      - name: Publish prerelease to npm
+        if: ${{ contains(github.ref_name, '-') }}
+        shell: bash
+        working-directory: npm
+        run: npm publish --access public --tag next
