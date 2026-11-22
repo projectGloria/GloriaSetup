@@ -27,8 +27,6 @@
 "options.startMenu" = "Menú Inicio"
 "options.always" = "Siempre"
 "options.desktop" = "Acceso directo en el escritorio"
-"options.after" = "Al terminar"
-"options.launch" = "Abrir {name}"
 "options.space" = "{req} necesarios · {free} libres en {drive}"
 "try" = "Probar:"
 "progress.kicker" = "Instalando"

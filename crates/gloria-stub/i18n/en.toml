@@ -27,8 +27,6 @@
 "options.startMenu" = "Start menu"
 "options.always" = "Always"
 "options.desktop" = "Desktop shortcut"
-"options.after" = "When done"
-"options.launch" = "Launch {name}"
 "options.space" = "{req} needed · {free} free on {drive}"
 "try" = "Try:"
 "progress.kicker" = "Installing"

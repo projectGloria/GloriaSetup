@@ -704,14 +704,11 @@ impl<'u, 'a> Ui<'u, 'a> {
             y = self.hint(x, y, w, "folder", DIM, DIM, &[(&s, None)]);
         }
         y += 22.0;
-        let cw = (w - 28.0) / 2.0;
         self.p.label(LBL, &self.up("options.shortcuts"), x, y, DIM2);
-        self.p.label(LBL, &self.up("options.after"), x + cw + 28.0, y, DIM2);
         let y0 = y + self.lh(LBL) + 10.0;
         let tag = self.up("options.always");
-        let y1 = self.checkbox(x, y0, cw, &self.t("options.startMenu"), true, Act::Noop, false, Some(&tag));
-        self.checkbox(x, y1 + 10.0, cw, &self.t("options.desktop"), app.desktop, Act::Desktop, false, None);
-        self.checkbox(x + cw + 28.0, y0, cw, &app.s.t("options.launch"), app.launch, Act::Launch, false, None);
+        let y1 = self.checkbox(x, y0, w, &self.t("options.startMenu"), true, Act::Noop, false, Some(&tag));
+        self.checkbox(x, y1 + 10.0, w, &self.t("options.desktop"), app.desktop, Act::Desktop, false, None);
         self.footer(
             false,
             &[(&self.t("back"), Kind::Normal, None, Act::Go(Page::Welcome), true)],

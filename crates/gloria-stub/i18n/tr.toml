@@ -27,8 +27,6 @@
 "options.startMenu" = "Başlat menüsü"
 "options.always" = "Her zaman"
 "options.desktop" = "Masaüstü kısayolu"
-"options.after" = "Bitince"
-"options.launch" = "{name} uygulamasını aç"
 "options.space" = "{req} gerekli · {drive} üzerinde {free} boş"
 "try" = "Dene:"
 "progress.kicker" = "Kuruluyor"

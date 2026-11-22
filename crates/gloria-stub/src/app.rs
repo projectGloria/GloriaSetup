@@ -157,7 +157,6 @@ pub enum Act {
     Cancel,
     Choice(bool),
     Desktop,
-    Launch,
     Purge,
     ConfirmDown,
     Modal(Option<Modal>),
@@ -209,7 +208,6 @@ pub struct App {
     pub page_t0: f64,
     pub folder: String,
     pub desktop: bool,
-    pub launch: bool,
     pub purge: bool,
     pub repair: bool,
     pub confirm_down: bool,
@@ -248,7 +246,6 @@ impl App {
             page_t0: 0.0,
             folder,
             desktop: false,
-            launch: true,
             purge: false,
             repair: true,
             confirm_down: false,
@@ -433,7 +430,6 @@ impl App {
             }
             Act::Choice(r) => self.repair = r,
             Act::Desktop => self.desktop = !self.desktop,
-            Act::Launch => self.launch = !self.launch,
             Act::Purge => self.purge = !self.purge,
             Act::ConfirmDown => self.confirm_down = !self.confirm_down,
             Act::Modal(m) => {

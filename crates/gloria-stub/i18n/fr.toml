@@ -27,8 +27,6 @@
 "options.startMenu" = "Menu Démarrer"
 "options.always" = "Toujours"
 "options.desktop" = "Raccourci sur le Bureau"
-"options.after" = "À la fin"
-"options.launch" = "Lancer {name}"
 "options.space" = "{req} requis · {free} libres sur {drive}"
 "try" = "Essayer :"
 "progress.kicker" = "Installation"

@@ -225,7 +225,6 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             }
             let remove_first = existing.filter(|d| clean || !same_dir(d, &dir)).map(|d| (d, clean && app.purge));
             let desktop = app.desktop;
-            let launch = app.launch;
             // From the migrate page: remove the old installs first; the data checkbox there decides `purge`.
             let migrate = if home == Page::Migrate { legacy.as_ref().clone() } else { Vec::new() };
             let purge = !migrate.is_empty() && app.purge;
@@ -233,9 +232,6 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             let src = src.clone();
             std::thread::spawn(move || {
                 let r = run_plan(&src, &plan, Some(&job));
-                if r.is_ok() && launch && !dry_run {
-                    sys::launch(&dir.join(src.m.app.main_exe_rel()));
-                }
                 let mut st = job.lock().unwrap();
                 if r.is_ok() {
                     st.pct = 100.0;
@@ -245,7 +241,9 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             None
         }
         Effect::LaunchAndExit => {
-            sys::launch(&app.check.final_dir.join(app_m.main_exe_rel()));
+            if !dry_run {
+                sys::launch(&app.check.final_dir.join(app_m.main_exe_rel()));
+            }
             Some(0)
         }
         Effect::OpenLog => {
