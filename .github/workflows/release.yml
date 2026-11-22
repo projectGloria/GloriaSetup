@@ -1,50 +1,94 @@
 name: Release
 
-# Push a tag like v0.1.0 (matching Cargo.toml and npm/package.json) to publish gloria-pack.exe and
-# gloria-stub.exe to GitHub Releases and publish the `gloria-setup` package to npm.
+# Automatically builds and publishes GitHub Releases + npm (`gloria-setup`) when Cargo.toml and
+# npm/package.json bump version on `main`, or when triggered manually via workflow_dispatch.
 on:
   push:
-    tags: ['v*.*.*']
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build and test without publishing a GitHub Release or npm package
+        type: boolean
+        default: true
 
 permissions:
   contents: read
 
 jobs:
-  release:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      tag: ${{ steps.check.outputs.tag }}
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Check version change and manifest sync
+        id: check
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          if [[ -z "$VERSION" ]]; then
+            echo "::error::Could not read version from Cargo.toml"
+            exit 1
+          fi
+          NPM_VERSION="$(node -p "require('./npm/package.json').version")"
+          if [[ "$NPM_VERSION" != "$VERSION" ]]; then
+            echo "::error::npm/package.json version ($NPM_VERSION) does not match Cargo.toml ($VERSION)"
+            exit 1
+          fi
+
+          BUILD="false"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            BUILD="true"
+          elif [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
+            BUILD="true"
+          else
+            PREV_VERSION="$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1 || true)"
+            if [[ "$PREV_VERSION" != "$VERSION" ]]; then
+              BUILD="true"
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "Detected version=$VERSION (build=$BUILD)"
+
+  build:
+    needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: windows-latest
-    permissions:
-      contents: write
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Tag matches workspace and npm versions
-        shell: pwsh
-        run: |
-          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $v" }
-          $npmV = (Get-Content npm\package.json -Raw | ConvertFrom-Json).version
-          if ($npmV -ne $v) { throw "npm/package.json version $npmV does not match Cargo.toml version $v" }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Test
         shell: pwsh
         run: cargo test --workspace --locked
 
-      - name: Build
+      - name: Build release binaries
         shell: pwsh
         run: |
           cargo build --release --locked -p gloria-stub -p gloria-pack
           if ($LASTEXITCODE -ne 0) { exit 1 }
           $mb = (Get-Item target\release\gloria-stub.exe).Length / 1MB
-          if ($mb -ge 5) { throw "gloria-stub.exe is {0:N2} MB (must be < 5 MB)" -f $mb }
+          "gloria-stub.exe: {0:N2} MB" -f $mb
+          if ($mb -ge 5) { throw ("gloria-stub.exe is {0:N2} MB (must be < 5 MB)" -f $mb) }
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item target\release\gloria-pack.exe, target\release\gloria-stub.exe out\
-          Get-ChildItem out -Filter *.exe | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
-            Set-Content -Encoding ascii out\SHA256SUMS.txt
-          Get-Content out\SHA256SUMS.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: gloria-setup-bin
           compression-level: 0
@@ -52,30 +96,57 @@ jobs:
             out/gloria-pack.exe
             out/gloria-stub.exe
 
-      - name: Publish GitHub Release
-        shell: pwsh
+  publish:
+    needs: [version, build]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || !inputs.dry_run)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: gloria-setup-bin
+          path: dist
+
+      - name: Generate checksums and publish GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
-          $args = @('release', 'create', $env:GITHUB_REF_NAME, 'out\gloria-pack.exe', 'out\gloria-stub.exe', 'out\SHA256SUMS.txt',
-            '--title', "GloriaSetup $env:GITHUB_REF_NAME", '--generate-notes')
-          if ($env:GITHUB_REF_NAME -like '*-*') { $args += '--prerelease' }
-          gh @args
+          set -euo pipefail
+          (cd dist && sha256sum gloria-pack.exe gloria-stub.exe > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+          CREATE_ARGS=(release create "$TAG" --draft --title "GloriaSetup $TAG" --generate-notes)
+          if [[ "$VERSION" == *-* ]]; then
+            CREATE_ARGS+=(--prerelease)
+          fi
+          gh "${CREATE_ARGS[@]}"
+
+          gh release upload "$TAG" dist/gloria-pack.exe dist/gloria-stub.exe dist/SHA256SUMS.txt --clobber
+
+          mkdir -p verify
+          gh release download "$TAG" --dir verify --clobber
+          (cd verify && sha256sum --check SHA256SUMS.txt)
+
+          gh release edit "$TAG" --draft=false
 
   publish-npm:
-    needs: release
+    needs: [version, publish]
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || !inputs.dry_run)
     runs-on: windows-latest
     permissions:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: gloria-setup-bin
           path: npm/bin
@@ -86,13 +157,13 @@ jobs:
         run: npm test
 
       - name: Publish to npm
-        if: ${{ !contains(github.ref_name, '-') }}
+        if: ${{ !contains(needs.version.outputs.version, '-') }}
         shell: bash
         working-directory: npm
         run: npm publish --access public
 
       - name: Publish prerelease to npm
-        if: ${{ contains(github.ref_name, '-') }}
+        if: ${{ contains(needs.version.outputs.version, '-') }}
         shell: bash
         working-directory: npm
         run: npm publish --access public --tag next
