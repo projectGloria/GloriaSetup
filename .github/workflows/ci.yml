@@ -44,6 +44,16 @@ jobs:
           "gloria-stub.exe: {0:N2} MB" -f $mb
           if ($mb -ge 5) { throw 'the stub must stay under 5 MB' }
 
+      - name: Verify npm package
+        shell: pwsh
+        run: |
+          ./tools/stage-npm.ps1
+          Push-Location npm
+          try {
+            npm pack --dry-run
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+          } finally { Pop-Location }
+
       - uses: actions/upload-artifact@v4
         with:
           name: gloria-setup-bin

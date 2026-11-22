@@ -1,0 +1,62 @@
+{
+  "name": "gloria-setup",
+  "version": "0.1.1",
+  "description": "Per-user (no admin) Windows installer builder for projectGloria apps (gloria-pack + gloria-stub).",
+  "license": "MIT",
+  "author": "projectGloria",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/projectGloria/GloriaSetup.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/projectGloria/GloriaSetup#readme",
+  "bugs": {
+    "url": "https://github.com/projectGloria/GloriaSetup/issues"
+  },
+  "keywords": [
+    "windows",
+    "installer",
+    "setup",
+    "gloria-setup",
+    "gloria-pack",
+    "projectgloria",
+    "per-user",
+    "nsis",
+    "tauri",
+    "electron"
+  ],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./index.cjs",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs",
+      "require": "./index.cjs"
+    }
+  },
+  "bin": {
+    "gloria-pack": "cli.cjs",
+    "gloria-setup": "cli.cjs"
+  },
+  "files": [
+    "bin/gloria-pack.exe",
+    "bin/gloria-stub.exe",
+    "cli.cjs",
+    "index.cjs",
+    "index.mjs",
+    "index.d.ts",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test.cjs"
+  }
+}

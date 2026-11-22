@@ -1,29 +1,34 @@
 name: Release
 
-# Push a tag like v0.1.0 (matching the workspace version) to publish gloria-pack.exe and gloria-stub.exe. App repos
-# that use projectGloria/GloriaSetup@v0.1.0 download exactly these files.
+# Push a tag like v0.1.0 (matching Cargo.toml and npm/package.json) to publish gloria-pack.exe and
+# gloria-stub.exe to GitHub Releases and publish the `gloria-setup` package to npm.
 on:
   push:
     tags: ['v*.*.*']
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: windows-latest
+    permissions:
+      contents: write
     env:
       RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
 
-      - name: Tag matches the workspace version
+      - name: Tag matches workspace and npm versions
         shell: pwsh
         run: |
           $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
-          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match workspace version $v" }
+          if ("v$v" -ne $env:GITHUB_REF_NAME) { throw "tag $env:GITHUB_REF_NAME does not match Cargo.toml version $v" }
+          $npmV = (Get-Content npm\package.json -Raw | ConvertFrom-Json).version
+          if ($npmV -ne $v) { throw "npm/package.json version $npmV does not match Cargo.toml version $v" }
 
       - name: Test
+        shell: pwsh
         run: cargo test --workspace --locked
 
       - name: Build
@@ -31,16 +36,64 @@ jobs:
         run: |
           cargo build --release --locked -p gloria-stub -p gloria-pack
           if ($LASTEXITCODE -ne 0) { exit 1 }
+          $mb = (Get-Item target\release\gloria-stub.exe).Length / 1MB
+          if ($mb -ge 5) { throw "gloria-stub.exe is {0:N2} MB (must be < 5 MB)" -f $mb }
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item target\release\gloria-pack.exe, target\release\gloria-stub.exe out\
           Get-ChildItem out -Filter *.exe | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
             Set-Content -Encoding ascii out\SHA256SUMS.txt
           Get-Content out\SHA256SUMS.txt
 
-      - name: Publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gloria-setup-bin
+          compression-level: 0
+          path: |
+            out/gloria-pack.exe
+            out/gloria-stub.exe
+
+      - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:GITHUB_REF_NAME out\gloria-pack.exe out\gloria-stub.exe out\SHA256SUMS.txt `
-            --title "GloriaSetup $env:GITHUB_REF_NAME" --generate-notes
+          $args = @('release', 'create', $env:GITHUB_REF_NAME, 'out\gloria-pack.exe', 'out\gloria-stub.exe', 'out\SHA256SUMS.txt',
+            '--title', "GloriaSetup $env:GITHUB_REF_NAME", '--generate-notes')
+          if ($env:GITHUB_REF_NAME -like '*-*') { $args += '--prerelease' }
+          gh @args
+
+  publish-npm:
+    needs: release
+    runs-on: windows-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: gloria-setup-bin
+          path: npm/bin
+
+      - name: Verify npm package
+        shell: pwsh
+        working-directory: npm
+        run: npm test
+
+      - name: Publish to npm
+        shell: pwsh
+        working-directory: npm
+        run: |
+          $npmVer = [version](npm --version).Trim()
+          if ($npmVer -lt [version]'11.5.1') {
+            npm install -g npm@latest
+          }
+          $v = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $args = @('publish', '--access', 'public')
+          if ($v -like '*-*') { $args += '--tag', 'next' }
+          npm @args

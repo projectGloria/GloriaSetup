@@ -21,6 +21,15 @@ cargo build --release -p gloria-stub -p gloria-pack
 cargo test --workspace
 ```
 
+## Install via npm
+
+```powershell
+npm install --save-dev gloria-setup
+npx gloria-pack --app path\to\built\app --manifest path\to\gloria.toml --version 1.2.0 --out dist
+```
+
+The `gloria-setup` npm package bundles `gloria-pack.exe` and `gloria-stub.exe` directly (Windows x64) and also exports a JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
+
 ## Pack an app
 
 ```powershell
@@ -68,8 +77,8 @@ checks their SHA-256; at a branch or commit it builds them from source. Other in
 `webview2-bootstrapper`, `out-dir`, `timestamp-url`, `upload` (`auto`/`true`/`false`), `release-tag`,
 `gloria-setup-version`. Outputs: `setup-path`, `setup-name`, `signed`. All in [action.yml](action.yml).
 
-Releasing GloriaSetup itself: bump `version` in `Cargo.toml`, push, then push the tag `v<version>`. The release
-workflow tests, builds and publishes `gloria-pack.exe`, `gloria-stub.exe` and `SHA256SUMS.txt`.
+Releasing GloriaSetup itself: bump `version` in `Cargo.toml` and `npm/package.json`, push, then push the tag `v<version>`. The release
+workflow tests, builds and publishes `gloria-pack.exe`, `gloria-stub.exe` and `SHA256SUMS.txt` to GitHub Releases and publishes `gloria-setup` to npm.
 
 ## Setup command line
 
