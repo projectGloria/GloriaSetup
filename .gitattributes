@@ -1,0 +1,3 @@
+npm/cli.cjs text eol=lf
+*.cjs text eol=lf
+*.mjs text eol=lf
