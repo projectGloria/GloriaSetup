@@ -188,9 +188,37 @@ pub fn check_install_dir(p: &Path, sys: &SystemDirs, data: &[PathBuf]) -> Result
     Ok(())
 }
 
-/// Default install folder: `%LOCALAPPDATA%\Programs\<Name>`.
+/// The shared parent every projectGloria app installs under by default.
+pub const SUITE_DIR: &str = "Project Gloria Softwares";
+
+/// Default install folder: `%LOCALAPPDATA%\Programs\Project Gloria Softwares\<Name>`.
 pub fn default_install_dir(local_app_data: &Path, name: &str) -> PathBuf {
-    local_app_data.join("Programs").join(sanitize_file_name(name))
+    local_app_data.join("Programs").join(SUITE_DIR).join(sanitize_file_name(name))
+}
+
+/// `dir`'s parent when it is the shared [`SUITE_DIR`] folder (removed once the last app in it is gone).
+pub fn suite_parent(dir: &Path) -> Option<&Path> {
+    dir.parent().filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(SUITE_DIR)))
+}
+
+/// Is `file_name` (directly in `%TEMP%`) something GloriaSetup left there for app `id`: a run log
+/// (`GloriaSetup-<id>-YYYYMMDD-HHMMSS.log`), an uninstall trampoline copy (`GloriaSetup-<id>-<8 hex>.exe`) or the
+/// migration data backup (`GloriaSetup-backup-<id>`)? Strict, so app `foo` never matches app `foo-bar`'s files.
+pub fn is_temp_leftover(file_name: &str, id: &str) -> bool {
+    let f = file_name.to_ascii_lowercase();
+    let id = id.to_ascii_lowercase();
+    if f == format!("gloriasetup-backup-{id}") {
+        return true;
+    }
+    let Some(rest) = f.strip_prefix(&format!("gloriasetup-{id}-")) else { return false };
+    let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
+    if let Some(stamp) = rest.strip_suffix(".log") {
+        return matches!(stamp.split_once('-'), Some((d, t)) if digits(d, 8) && digits(t, 6));
+    }
+    if let Some(hex) = rest.strip_suffix(".exe") {
+        return hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit());
+    }
+    false
 }
 
 /// Makes a display name safe as a single path component (used for the folder and .lnk names).
@@ -309,7 +337,29 @@ mod tests {
         assert_eq!(sanitize_file_name(" .. "), "App");
         assert_eq!(
             default_install_dir(Path::new(r"C:\Users\you\AppData\Local"), "GloriaDummy"),
-            PathBuf::from(r"C:\Users\you\AppData\Local\Programs\GloriaDummy")
+            PathBuf::from(r"C:\Users\you\AppData\Local\Programs\Project Gloria Softwares\GloriaDummy")
         );
+        let d = default_install_dir(Path::new(r"C:\Users\you\AppData\Local"), "X");
+        assert_eq!(suite_parent(&d), Some(Path::new(r"C:\Users\you\AppData\Local\Programs\Project Gloria Softwares")));
+        assert_eq!(suite_parent(Path::new(r"D:\Apps\X")), None);
+    }
+
+    #[test]
+    fn temp_leftovers() {
+        for ok in ["GloriaSetup-Foo-20261123-101500.log", "gloriasetup-foo-0a1b2c3d.exe", "GloriaSetup-backup-Foo"] {
+            assert!(is_temp_leftover(ok, "Foo"), "{ok}");
+        }
+        for no in [
+            "GloriaSetup-Foo-Bar-20261123-101500.log",
+            "GloriaSetup-Foo-bar.exe",
+            "GloriaSetup-Foo-0a1b2c3.exe",
+            "GloriaSetup-Foo-2026112-101500.log",
+            "GloriaSetup-FooBar-20261123-101500.log",
+            "GloriaSetup-backup-Foo-old",
+            "GloriaSetup-Foo-20261123-101500.txt",
+            "other.log",
+        ] {
+            assert!(!is_temp_leftover(no, "Foo"), "{no}");
+        }
     }
 }

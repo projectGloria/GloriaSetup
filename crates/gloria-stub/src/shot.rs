@@ -15,7 +15,7 @@ use crate::i18n::LANGS;
 use crate::ui::{self, Input, H, W};
 
 /// Extra states beyond the mockup pages.
-pub const EXTRA_IDS: [&str; 3] = ["update-waiting", "update-stuck", "welcome-link-hover"];
+pub const EXTRA_IDS: [&str; 5] = ["update-waiting", "update-stuck", "welcome-link-hover", "uninstall-wipe", "uninstall-done-wipe"];
 
 /// Renders one screen to a PNG at `scale` (1 = 96 DPI).
 pub fn render(g: &Gfx, app: &App, inp: Input, scale: f32, path: &Path) -> Result<()> {

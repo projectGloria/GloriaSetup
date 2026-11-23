@@ -10,6 +10,8 @@ pub struct Args {
     pub silent: bool,
     pub install_dir: Option<PathBuf>,
     pub purge: bool,
+    /// `/WIPE`: uninstall leaves nothing behind (implies `/PURGE`).
+    pub wipe: bool,
     pub allow_downgrade: bool,
     pub relaunch: bool,
     pub dry_run: bool,
@@ -114,6 +116,10 @@ pub fn parse_args_str(rest: &str) -> Result<Args, CliError> {
         match lower.as_str() {
             "/s" => a.silent = true,
             "/purge" => a.purge = true,
+            "/wipe" => {
+                a.wipe = true;
+                a.purge = true;
+            }
             "/allowdowngrade" => a.allow_downgrade = true,
             "/relaunch" => a.relaunch = true,
             "--dry-run" => a.dry_run = true,
@@ -199,7 +205,9 @@ mod tests {
         let a = p(r#"t.exe --cleanup "C:\Users\you\AppData\Local\Programs\Foo" --wait-pid 1234 /S /PURGE"#);
         assert_eq!(a.cleanup, Some(PathBuf::from(r"C:\Users\you\AppData\Local\Programs\Foo")));
         assert_eq!(a.wait_pid, Some(1234));
-        assert!(a.silent && a.purge);
+        assert!(a.silent && a.purge && !a.wipe);
+        let a = p(r#"t.exe --cleanup "C:\Apps\Foo" /S /wipe"#);
+        assert!(a.wipe && a.purge, "/WIPE implies /PURGE");
     }
 
     #[test]

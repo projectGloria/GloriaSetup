@@ -520,10 +520,14 @@ pub fn spawn(exe: &Path, args: &str) -> std::io::Result<u32> {
     Ok(child.id())
 }
 
-/// Deletes this (temporary) exe after it exits: a hidden `cmd` waits a moment, then removes it.
-pub fn delete_self_later() {
+/// Deletes this (temporary) exe after it exits, and `also` (e.g. this run's log): a hidden `cmd` waits a moment,
+/// then removes them.
+pub fn delete_self_later(also: Option<&Path>) {
     let Ok(me) = std::env::current_exe() else { return };
-    let cmd = format!(r#"/d /c ping 127.0.0.1 -n 3 >nul & del /f /q "{}""#, me.display());
+    let mut cmd = format!(r#"/d /c ping 127.0.0.1 -n 3 >nul & del /f /q "{}""#, me.display());
+    if let Some(p) = also {
+        cmd += &format!(r#" & del /f /q "{}" 2>nul"#, p.display());
+    }
     let _ = std::process::Command::new("cmd.exe").raw_arg(cmd).creation_flags(CREATE_NO_WINDOW).spawn();
 }
 

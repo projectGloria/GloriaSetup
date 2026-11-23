@@ -46,4 +46,4 @@ console.log(inspect(stubPath));
 
 ## Documentation
 
-Full manifest schema (`gloria.toml`), silent installer flags (`/S`, `/D=...`, `/PURGE`), and GitHub Action docs live in the main repository: https://github.com/projectGloria/GloriaSetup
+Full manifest schema (`gloria.toml`), silent installer flags (`/S`, `/D=...`, `/PURGE`, `/WIPE`), and GitHub Action docs live in the main repository: https://github.com/projectGloria/GloriaSetup

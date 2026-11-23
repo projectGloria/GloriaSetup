@@ -23,14 +23,14 @@ Per-user Windows installer stub, packager CLI, and GitHub Action for projectGlor
 
 ## About
 
-GloriaSetup is a Windows x64 installer toolchain written in Rust (`windows` 0.62) consisting of a native Win32/Direct2D setup stub (`gloria-stub`), a packager CLI (`gloria-pack`), a shared core library (`gloria-core`), an npm distribution (`gloria-setup`), and a composite GitHub Action (`action.yml`). It packages an application directory and a `gloria.toml` manifest into a single zstd-compressed `<Name>_<version>_x64-setup.exe` that installs per-user under `%LOCALAPPDATA%\Programs\<App>` and registers only under `HKCU` with no administrator privileges required (elevation is requested only when migrating a legacy all-users `HKLM` installation). Full architecture details are documented in [docs/design.md](docs/design.md).
+GloriaSetup is a Windows x64 installer toolchain written in Rust (`windows` 0.62) consisting of a native Win32/Direct2D setup stub (`gloria-stub`), a packager CLI (`gloria-pack`), a shared core library (`gloria-core`), an npm distribution (`gloria-setup`), and a composite GitHub Action (`action.yml`). It packages an application directory and a `gloria.toml` manifest into a single zstd-compressed `<Name>_<version>_x64-setup.exe` that installs per-user under `%LOCALAPPDATA%\Programs\Project Gloria Softwares\<App>` and registers only under `HKCU` with no administrator privileges required (elevation is requested only when migrating a legacy all-users `HKLM` installation). Full architecture details are documented in [docs/design.md](docs/design.md).
 
 ## Features
 
-- **Per-user installs without UAC** — Installs to `%LOCALAPPDATA%\Programs\<Name>` (or a validated custom folder) and writes uninstall metadata exclusively to `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\projectGloria.<id>` for Windows Settings and GloriaLauncher.
+- **Per-user installs without UAC** — Installs to `%LOCALAPPDATA%\Programs\Project Gloria Softwares\<Name>` (or a validated custom folder) and writes uninstall metadata exclusively to `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\projectGloria.<id>` for Windows Settings and GloriaLauncher.
 - **Native Win32 + Direct2D UI** — Renders a 640×440 frameless dark-mode installer using Direct2D/DirectWrite with software-renderer (WARP) support, per-app accent theming, and built-in translations for English (`en`), French (`fr`), Spanish (`es`), and Turkish (`tr`).
 - **Crash-safe journaled commits** — Stages payloads into `<dir>\.gloria\staging`, records a commit journal before swapping files with `.gloria\backup`, and automatically rolls back interrupted installs or updates on the next run.
-- **Safe updates, downgrades, and uninstalls** — Removes only files tracked in `install-manifest.json`, preserves user data in `data_folders` unless `/PURGE` or the off-by-default data removal checkbox is selected, refuses silent downgrades without `/ALLOWDOWNGRADE`, and self-deletes `uninstall.exe` via a `%TEMP%` trampoline.
+- **Safe updates, downgrades, and uninstalls** — Removes only files tracked in `install-manifest.json`, preserves user data in `data_folders` unless `/PURGE` or the off-by-default data removal checkbox is selected (or `/WIPE` / "remove everything", which also clears leftover files and setup logs), refuses silent downgrades without `/ALLOWDOWNGRADE`, and self-deletes `uninstall.exe` via a `%TEMP%` trampoline.
 - **Legacy migration and optional WebView2** — Detects prior NSIS/MSI/Inno installs, backs up `data_folders` before running legacy uninstallers, and optionally bundles `MicrosoftEdgeWebview2Setup.exe` to run only when WebView2 is missing.
 - **Resource patching and Authenticode signing** — Replaces the stub's PE icons and version info with the target app's own assets, appends the `GLSETUP\0` tar/zstd payload, and signs `uninstall.exe` and the final setup via `signtool.exe`.
 - **CI and npm distribution** — Ships as a composite GitHub Action (`action.yml`) that downloads checksum-verified binaries and attaches setups to GitHub Releases, plus the `gloria-setup` npm package with CLI and JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
@@ -160,6 +160,7 @@ Run setups with slash flags from PowerShell or `cmd.exe`:
 | `/S` | Silent install or uninstall |
 | `/D=<path>` | Custom install folder (must be the last argument; spaces need no quotes) |
 | `/PURGE` | Also delete configured `data_folders` during silent uninstall or clean reinstall |
+| `/WIPE` | Uninstall leaves nothing behind: `/PURGE` plus every leftover file in a setup-created install folder and GloriaSetup's `%TEMP%` logs for the app |
 | `/ALLOWDOWNGRADE` | Permit installing an older version during a silent install |
 | `/RELAUNCH` | Start the installed app after a silent install completes |
 | `--dry-run` | Log every planned file, shortcut, and registry action without modifying disk or registry |
@@ -224,7 +225,7 @@ Outputs: `setup-path`, `setup-name`, `signed`.
 ## Troubleshooting
 
 - **Slash flags fail in Git Bash (`exit code 6`):** MSYS/Git Bash rewrites `/S` into a POSIX path. Run setups with flags from PowerShell (`Start-Process ... -ArgumentList '/S' -Wait -PassThru`) or `cmd.exe`.
-- **Disallowed install directory (`exit code 6`):** GloriaSetup refuses `%TEMP%`, `Program Files`, `Windows`, and overlapping `data_folders`. Choose a per-user directory such as `C:\Users\you\AppData\Local\Programs\<App>`.
+- **Disallowed install directory (`exit code 6`):** GloriaSetup refuses `%TEMP%`, `Program Files`, `Windows`, and overlapping `data_folders`. Choose a per-user directory such as `C:\Users\you\AppData\Local\Programs\Project Gloria Softwares\<App>`.
 - **Running application or locked files (`exit code 3`):** Close the target application before retrying. In silent mode (`/S`), the stub waits a grace period and attempts to force-close matching processes before returning `3`.
 - **WebView2 installation fails (`exit code 5`):** For `needs_webview2 = true` apps, bundle `MicrosoftEdgeWebview2Setup.exe` via `--webview2-bootstrapper`. If the target machine lacks WebView2 and has no network access, the bootstrapper fails and nothing is left installed.
 - **SmartScreen warning on unsigned setups:** If `--sign-pfx` / `certificate` is omitted, the generated `.exe` is unsigned and Windows SmartScreen may warn until it builds reputation or is signed with a trusted certificate.

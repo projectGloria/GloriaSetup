@@ -158,6 +158,8 @@ pub enum Act {
     Choice(bool),
     Desktop,
     Purge,
+    /// "Remove everything" on the uninstall page (turns `purge` on with it).
+    Wipe,
     ConfirmDown,
     Modal(Option<Modal>),
     Force,
@@ -209,6 +211,7 @@ pub struct App {
     pub folder: String,
     pub desktop: bool,
     pub purge: bool,
+    pub wipe: bool,
     pub repair: bool,
     pub confirm_down: bool,
     pub modal: Option<Modal>,
@@ -247,6 +250,7 @@ impl App {
             folder,
             desktop: false,
             purge: false,
+            wipe: false,
             repair: true,
             confirm_down: false,
             modal: None,
@@ -299,6 +303,7 @@ impl App {
         self.running = None;
         self.modal = None;
         self.purge = false;
+        self.wipe = false;
         self.folder = default.clone();
         self.flow = if id.starts_with("update") { Flow::Update } else { Flow::Install };
         let page = match id {
@@ -332,8 +337,18 @@ impl App {
                 self.installed = Some(self.info.version().into());
                 Page::Uninstall
             }
+            // "Remove everything" ticked (it ticks the data checkbox with it).
+            "uninstall-wipe" => {
+                self.installed = Some(self.info.version().into());
+                (self.purge, self.wipe) = (true, true);
+                Page::Uninstall
+            }
             "uninstall-progress" => Page::UninstallProgress,
             "uninstall-done" => Page::UninstallDone,
+            "uninstall-done-wipe" => {
+                (self.purge, self.wipe) = (true, true);
+                Page::UninstallDone
+            }
             "error" => {
                 let ts = "20261120-2207";
                 self.error = Some(ErrorInfo {
@@ -430,7 +445,15 @@ impl App {
             }
             Act::Choice(r) => self.repair = r,
             Act::Desktop => self.desktop = !self.desktop,
-            Act::Purge => self.purge = !self.purge,
+            Act::Purge => {
+                self.purge = !self.purge;
+                // Keeping the data means not removing everything.
+                self.wipe &= self.purge;
+            }
+            Act::Wipe => {
+                self.wipe = !self.wipe;
+                self.purge |= self.wipe;
+            }
             Act::ConfirmDown => self.confirm_down = !self.confirm_down,
             Act::Modal(m) => {
                 self.modal = m;

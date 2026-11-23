@@ -252,6 +252,7 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         let _ = install_manifest::remove_tree_no_follow(&work, false, &mut |_| {});
         if created_dir {
             let _ = fs::remove_dir(dir);
+            remove_empty_suite_dir(dir);
         }
         f
     };
@@ -679,16 +680,20 @@ pub struct Uninstall<'a> {
     pub app: &'a AppManifest,
     pub dir: PathBuf,
     pub purge: bool,
+    /// "Remove everything": `purge`, plus the whole install folder (when setup created it, including files the app
+    /// wrote there later) and everything GloriaSetup left in `%TEMP%` for this app.
+    pub wipe: bool,
     pub dry_run: bool,
     /// The uninstaller that started this trampoline; waited for so its exe can be deleted.
     pub wait_pid: Option<u32>,
 }
 
-/// Removes exactly what the install manifest lists, the shortcuts and the registry key; user data only if `purge`.
+/// Removes exactly what the install manifest lists, the shortcuts and the registry key; user data only if `purge`;
+/// with `wipe`, everything else this app and GloriaSetup left behind too.
 pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
     let app = u.app;
     let dir = &u.dir;
-    log!("uninstall {} from {} (purge: {}, dry run: {})", app.id, dir.display(), u.purge, u.dry_run);
+    log!("uninstall {} from {} (purge: {}, wipe: {}, dry run: {})", app.id, dir.display(), u.purge, u.wipe, u.dry_run);
     if let Some(pid) = u.wait_pid {
         if !sys::wait_pid(pid, Duration::from_secs(30)) {
             log!("uninstaller {pid} is still running");
@@ -739,9 +744,16 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
         progress(10.0 + 60.0 * (i + 1) as f32 / n as f32, &shown);
     }
 
-    if u.purge {
+    if u.purge || u.wipe {
         progress(75.0, "");
         remove_data(app, &m.data_folders, dir, u.dry_run);
+    }
+    if u.wipe {
+        wipe_install_dir(dir, &m, u.dry_run);
+        remove_temp_leftovers(&app.id, u.dry_run);
+    }
+    if !u.dry_run {
+        remove_empty_suite_dir(dir);
     }
     progress(90.0, "");
     if ours {
@@ -766,6 +778,55 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
     progress(100.0, "");
     log!("uninstall done ({skipped} items skipped)");
     Ok(())
+}
+
+/// "Remove everything": deletes what is still in the install folder after the manifest-driven removal (files the app
+/// wrote there itself, logs, caches) and the folder. Only when setup created that folder, so a folder the user
+/// installed into that already held their own files is never emptied; never follows links.
+fn wipe_install_dir(dir: &Path, m: &InstallManifest, dry_run: bool) {
+    if !m.created_install_dir {
+        log!("{} existed before the install; leaving files GloriaSetup did not put there", dir.display());
+        return;
+    }
+    let guard = legacy::Guard::from_env(crate::app::env);
+    let sys_dirs = SystemDirs::from_env(crate::app::env);
+    if !guard.is_app_folder(dir) || paths::check_install_dir(dir, &sys_dirs, &[]).is_err() {
+        log!("{} is not a folder that is safe to empty; left alone", dir.display());
+        return;
+    }
+    let mut n = 0usize;
+    let r = install_manifest::remove_tree_no_follow(dir, dry_run, &mut |p| {
+        n += 1;
+        log!("{}{}", if dry_run { "[dry run] would remove " } else { "removed " }, p.display());
+    });
+    log!("emptied install folder {} ({n} leftover entries): {r:?}", dir.display());
+}
+
+/// "Remove everything": the logs, trampoline copies and data backup GloriaSetup put in `%TEMP%` for app `id`. The
+/// running exe and the current log are deleted after exit by `sys::delete_self_later`.
+fn remove_temp_leftovers(id: &str, dry_run: bool) {
+    let tmp = std::env::temp_dir();
+    let me = std::env::current_exe().ok().map(|p| norm(&p));
+    let log_now = crate::log::path().map(|p| norm(&p));
+    for e in fs::read_dir(&tmp).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let p = e.path();
+        let n = Some(norm(&p));
+        if !paths::is_temp_leftover(&name, id) || n == me || n == log_now {
+            continue;
+        }
+        let r = if dry_run { Ok(()) } else { install_manifest::remove_tree_no_follow(&p, false, &mut |_| {}) };
+        log!("{}removed {}: {r:?}", if dry_run { "[dry run] would have " } else { "" }, p.display());
+    }
+}
+
+/// Removes the shared `Project Gloria Softwares` folder once the last app in it is gone (only if empty).
+fn remove_empty_suite_dir(dir: &Path) {
+    let Some(parent) = paths::suite_parent(dir) else { return };
+    let plain_dir = fs::symlink_metadata(parent).is_ok_and(|md| md.is_dir() && !install_manifest::is_reparse_point(&md));
+    if plain_dir && fs::remove_dir(parent).is_ok() {
+        log!("removed the empty {}", parent.display());
+    }
 }
 
 /// Copies `uninstall.exe` to `%TEMP%` and starts it as the cleanup trampoline. Returns its pid.

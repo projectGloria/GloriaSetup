@@ -439,6 +439,76 @@ fn silent_exit_codes_and_dry_run() {
     assert!(!t.lnk().exists());
 }
 
+/// Waits until `p` is gone (the trampoline finishes after `uninstall.exe` returned).
+fn wait_gone(p: &Path) {
+    let t0 = Instant::now();
+    while p.exists() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "{} still exists", p.display());
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+#[test]
+fn wipe_leaves_nothing_behind() {
+    let t = TestApp::new("Wipe");
+    let s = t.pack("0.2.0", "dummy-a.ico");
+    // Under a "Project Gloria Softwares" parent, like the default folder, so its cleanup is covered too.
+    let suite = t.work.join("Project Gloria Softwares");
+    let dir = suite.join(&t.name);
+    assert_eq!(run(&s, &["/S", &format!("/D={}", dir.display())]), 0);
+    assert_eq!(t.reg("InstallLocation"), Some(dir.to_string_lossy().into_owned()));
+    t.make_data();
+    // Files the app wrote into its own folder after the install (not in the install manifest).
+    std::fs::create_dir_all(dir.join("logs")).unwrap();
+    std::fs::write(dir.join(r"logs\app.log"), "x").unwrap();
+    std::fs::write(dir.join("cache.bin"), "x").unwrap();
+    // What earlier GloriaSetup runs left in %TEMP%, and a look-alike of another app that must stay.
+    let tmp = std::env::temp_dir();
+    let old_log = tmp.join(format!("GloriaSetup-{}-20200101-000000.log", t.id));
+    let old_exe = tmp.join(format!("GloriaSetup-{}-deadbeef.exe", t.id));
+    let backup = tmp.join(format!("GloriaSetup-backup-{}", t.id));
+    let other = tmp.join(format!("GloriaSetup-{}x-20200101-000000.log", t.id));
+    for f in [&old_log, &old_exe, &other] {
+        std::fs::write(f, "x").unwrap();
+    }
+    std::fs::create_dir_all(backup.join("sub")).unwrap();
+
+    assert_eq!(run(&dir.join("uninstall.exe"), &["/S", "/WIPE"]), 0);
+    wait_gone(&dir);
+    assert!(!t.has_key());
+    assert!(!t.lnk().exists());
+    assert!(!t.data.exists(), "/WIPE removes data");
+    assert!(!suite.exists(), "the empty Project Gloria Softwares folder goes with the last app");
+    assert!(!old_log.exists() && !old_exe.exists() && !backup.exists(), "/WIPE clears GloriaSetup's %TEMP% leftovers");
+    assert!(other.exists(), "another app's files stay");
+    let _ = std::fs::remove_file(&other);
+    // The trampoline deletes itself and its own log a moment after it exits.
+    let t0 = Instant::now();
+    loop {
+        let left: Vec<String> = std::fs::read_dir(&tmp)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| gloria_core::paths::is_temp_leftover(n, &t.id))
+            .collect();
+        if left.is_empty() {
+            break;
+        }
+        assert!(t0.elapsed() < Duration::from_secs(30), "left in %TEMP%: {left:?}");
+        std::thread::sleep(Duration::from_millis(300));
+    }
+
+    // A folder that already existed (empty) before the install is not setup's to empty: /WIPE removes what setup
+    // put there and the data, and keeps files it cannot tell apart from the user's.
+    std::fs::create_dir_all(&t.install).unwrap();
+    assert_eq!(run(&s, &["/S", &format!("/D={}", t.install.display())]), 0);
+    std::fs::write(t.install.join("mine.txt"), "x").unwrap();
+    t.make_data();
+    assert_eq!(t.uninstall(&["/S", "/WIPE"]), 0);
+    assert_eq!(files(&t.install), ["mine.txt"]);
+    assert!(!t.data.exists());
+}
+
 #[test]
 fn spaces_in_unquoted_install_dir() {
     let t = TestApp::new("Spaces");

@@ -135,6 +135,7 @@ impl Guard {
             .collect();
         if let Some(l) = get("LOCALAPPDATA") {
             shared.push(l.join("Programs"));
+            shared.push(l.join("Programs").join(crate::paths::SUITE_DIR));
         }
         if let Some(u) = get("USERPROFILE") {
             shared.extend(["Desktop", "Documents", "Downloads", r"AppData\Local\Temp"].iter().map(|x| u.join(x)));

@@ -1023,7 +1023,13 @@ impl<'u, 'a> Ui<'u, 'a> {
         y = self.para(P, x, y + 10.0, w, &self.t("un.body"), MUTED);
         let folder = app.check.final_dir.to_string_lossy().into_owned();
         y = self.facts(x, y + 16.0, w, &[("location", folder, false)]);
-        self.data_block(x, y + 14.0, w, "data.remove", false);
+        y = self.data_block(x, y + 12.0, w, "data.remove", true);
+        // "Remove everything": lined up with the data checkbox above, with what it adds in a dim line under it.
+        let (cx, cw) = (x + 13.0, w - 13.0);
+        y = self.checkbox(cx, y + 10.0, cw, &self.t("un.wipe"), app.wipe, Act::Wipe, true, None);
+        let hf = font(Family::Sans, 400, 11.5).line(1.4);
+        let t = self.p.g.text(hf, &self.t("un.wipeHint"), cw - 26.0, Wrap::Wrap);
+        self.p.text(&t, cx + 26.0, y + 2.0, if app.wipe { DANGER_SOFT } else { DIM });
         self.footer(
             false,
             &[],
@@ -1039,7 +1045,7 @@ impl<'u, 'a> Ui<'u, 'a> {
         let (x, w) = self.hero(96.0, Badge::Gray);
         let mut y = self.kicker(x, CONTENT_Y, &self.t("und.kicker"), self.a);
         y = self.heading(H1.size(28.0), x, y, w, &self.t("und.title"));
-        y = self.para(P, x, y + 10.0, w, &self.t(if app.purge { "und.purged" } else { "und.kept" }), MUTED);
+        y = self.para(P, x, y + 10.0, w, &self.t(if app.wipe { "und.wiped" } else if app.purge { "und.purged" } else { "und.kept" }), MUTED);
         if !app.purge && !app.info.data.is_empty() {
             let d = &app.info.data;
             let mut s = d[0].0.clone();

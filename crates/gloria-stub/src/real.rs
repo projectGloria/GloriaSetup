@@ -64,7 +64,7 @@ fn run_plan(src: &Source, plan: &Plan, job: Option<&Shared>) -> Result<(), Fail>
         }
     }
     if let Some((dir, purge)) = &plan.remove_first {
-        let u = Uninstall { app: &src.m.app, dir: dir.clone(), purge: *purge, dry_run: plan.req.dry_run, wait_pid: None };
+        let u = Uninstall { app: &src.m.app, dir: dir.clone(), purge: *purge, wipe: false, dry_run: plan.req.dry_run, wait_pid: None };
         match job {
             Some(j) => engine::uninstall(&u, &mut reporter(j, 0.0, 7.0))?,
             None => engine::uninstall(&u, &mut quiet)?,
@@ -271,12 +271,14 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
 
 // ───────────────────────────── uninstall.exe ─────────────────────────────
 
-fn trampoline_flags(args: &Args, purge: bool, lang: Option<&str>) -> String {
+fn trampoline_flags(args: &Args, purge: bool, wipe: bool, lang: Option<&str>) -> String {
     let mut f = Vec::new();
     if args.silent {
         f.push("/S".to_string());
     }
-    if purge {
+    if wipe {
+        f.push("/WIPE".into());
+    } else if purge {
         f.push("/PURGE".into());
     }
     if args.dry_run {
@@ -301,7 +303,7 @@ pub fn uninstaller(args: &Args, src: Source) -> i32 {
         }
     }
     if args.silent {
-        return match engine::start_trampoline(&app, &dir, &trampoline_flags(args, args.purge, None)) {
+        return match engine::start_trampoline(&app, &dir, &trampoline_flags(args, args.purge, args.wipe, None)) {
             Ok(_) => Exit::Ok.code(),
             Err(e) => {
                 log!("trampoline: {e}");
@@ -321,7 +323,7 @@ pub fn uninstaller(args: &Args, src: Source) -> i32 {
         let software = args.software;
         let args = args.clone();
         let handler: Handler = Box::new(move |a, eff, _| match eff {
-            Effect::StartJob(_) => match engine::start_trampoline(&app, &dir, &trampoline_flags(&args, a.purge, Some(lang))) {
+            Effect::StartJob(_) => match engine::start_trampoline(&app, &dir, &trampoline_flags(&args, a.purge, a.wipe, Some(lang))) {
                 Ok(_) => Some(0),
                 Err(e) => {
                     log!("trampoline: {e}");
@@ -351,7 +353,7 @@ pub fn uninstaller(args: &Args, src: Source) -> i32 {
 
 pub fn cleanup(args: &Args, src: Source, dir: &Path) -> i32 {
     let app = src.m.app.clone();
-    let u = Uninstall { app: &app, dir: dir.to_path_buf(), purge: args.purge, dry_run: args.dry_run, wait_pid: args.wait_pid };
+    let u = Uninstall { app: &app, dir: dir.to_path_buf(), purge: args.purge, wipe: args.wipe, dry_run: args.dry_run, wait_pid: args.wait_pid };
     let code = if args.silent {
         match engine::uninstall(&u, &mut |_, _| true) {
             Ok(()) => 0,
@@ -364,13 +366,14 @@ pub fn cleanup(args: &Args, src: Source, dir: &Path) -> i32 {
             let mut a = new_app(&g, src.m.clone(), lang)?;
             a.installed = Some(app.version.clone());
             a.purge = args.purge;
+            a.wipe = args.wipe;
             a.home = Page::Uninstall;
             a.set_folder(dir.to_string_lossy().into_owned());
             a.start(Flow::Uninstall, 0.0);
             let job = a.job.clone().expect("job");
-            let (dir, purge, dry_run, wait_pid, app2) = (dir.to_path_buf(), args.purge, args.dry_run, args.wait_pid, app.clone());
+            let (dir, purge, wipe, dry_run, wait_pid, app2) = (dir.to_path_buf(), args.purge, args.wipe, args.dry_run, args.wait_pid, app.clone());
             std::thread::spawn(move || {
-                let u = Uninstall { app: &app2, dir, purge, dry_run, wait_pid };
+                let u = Uninstall { app: &app2, dir, purge, wipe, dry_run, wait_pid };
                 let r = engine::uninstall(&u, &mut reporter(&job, 0.0, 100.0));
                 let mut st = job.lock().unwrap();
                 st.result = Some(r.map_err(|f| info_of(&f)));
@@ -391,7 +394,9 @@ pub fn cleanup(args: &Args, src: Source, dir: &Path) -> i32 {
         })
     };
     if !args.dry_run {
-        sys::delete_self_later();
+        // "Remove everything" that worked takes this run's log with it; otherwise it stays for the error screen.
+        let log = if args.wipe && code == 0 { log::path() } else { None };
+        sys::delete_self_later(log.as_deref());
     }
     code
 }

@@ -140,7 +140,8 @@ Corner style (Win11 rounded vs square) is chosen in the mockups.
 ## 5. Install engine
 
 ### Paths
-- Default folder: `%LOCALAPPDATA%\Programs\<Name>`. Registry: `HKCU` only.
+- Default folder: `%LOCALAPPDATA%\Programs\Project Gloria Softwares\<Name>`, so every projectGloria app sits under
+  one per-user parent. Uninstall removes that parent once it is empty. Registry: `HKCU` only.
 - Rejected folders (exit code 6 in silent mode, inline error in UI): drive roots, UNC paths, anything under
   `%ProgramFiles%`, `%ProgramFiles(x86)%`, `%ProgramW6432%`, `%WINDIR%`, `%ProgramData%`, `%TEMP%`, any declared data
   folder, and any folder where a write probe fails.
@@ -292,6 +293,15 @@ when its own checkbox is ticked, and `/S` leaves it unticked, but we don't rely 
 Data is removed only when the user ticks "Also remove my settings and data" (unchecked by default, lists each folder
 with its size), or with `/PURGE` in silent mode. A normal update never asks and never deletes.
 
+The uninstall page has a second, off-by-default box, "Don't leave anything behind: remove everything" (`/WIPE` in
+silent mode). It ticks the data box with it and, on top of `/PURGE`:
+- empties and removes the whole install folder, including files the app wrote there itself (logs, caches), but only
+  when setup created that folder and it passes the same shared/system-folder guards as legacy migration; a folder
+  that existed before the install keeps everything setup did not put there;
+- deletes what GloriaSetup left in `%TEMP%` for this app id (`GloriaSetup-<id>-<timestamp>.log`, trampoline copies
+  `GloriaSetup-<id>-<8 hex>.exe`, the migration backup `GloriaSetup-backup-<id>`), matched strictly so another app
+  id never matches; the trampoline deletes its own log with its exe after a successful run.
+
 ## 10. Version comparison
 
 `gloria-core::version` implements SemVer 2.0 precedence with two extensions:
@@ -316,6 +326,7 @@ optional), so `/D=C:\My Apps\Foo` works. Flags are case-insensitive.
 | `/S` | silent install / uninstall |
 | `/D=<path>` | install folder |
 | `/PURGE` | remove user data (silent) |
+| `/WIPE` | uninstall leaves nothing behind: `/PURGE` plus leftover files in the install folder and `%TEMP%` logs |
 | `/ALLOWDOWNGRADE` | permit downgrade (silent) |
 | `/RELAUNCH` | start the app after a silent install/update |
 | `--preview`, `--page <name>`, `--lang <code>`, `--manifest <file>`, `--icon <file>`, `--screenshot <dir>` | preview |
