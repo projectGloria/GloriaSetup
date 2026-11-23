@@ -25,7 +25,6 @@
 "options.errRoot" = "No se puede instalar en la raíz de una unidad. Elige una carpeta."
 "options.shortcuts" = "Accesos directos"
 "options.startMenu" = "Menú Inicio"
-"options.always" = "Siempre"
 "options.desktop" = "Acceso directo en el escritorio"
 "options.space" = "{req} necesarios · {free} libres en {drive}"
 "try" = "Probar:"

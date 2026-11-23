@@ -706,8 +706,7 @@ impl<'u, 'a> Ui<'u, 'a> {
         y += 22.0;
         self.p.label(LBL, &self.up("options.shortcuts"), x, y, DIM2);
         let y0 = y + self.lh(LBL) + 10.0;
-        let tag = self.up("options.always");
-        let y1 = self.checkbox(x, y0, w, &self.t("options.startMenu"), true, Act::Noop, false, Some(&tag));
+        let y1 = self.checkbox(x, y0, w, &self.t("options.startMenu"), app.start_menu, Act::StartMenu, false, None);
         self.checkbox(x, y1 + 10.0, w, &self.t("options.desktop"), app.desktop, Act::Desktop, false, None);
         self.footer(
             false,

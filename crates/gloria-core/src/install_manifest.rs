@@ -13,9 +13,22 @@ use crate::paths::is_within;
 
 pub const SCHEMA: u32 = 1;
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Options {
+    /// Missing in manifests written before the Start Menu shortcut became optional: those always had one.
+    #[serde(default = "yes")]
+    pub start_menu_shortcut: bool,
     pub desktop_shortcut: bool,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { start_menu_shortcut: true, desktop_shortcut: false }
+    }
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,5 +379,14 @@ mod tests {
     fn dirs_for_lists_parents_first() {
         let d = InstallManifest::dirs_for(&[entry("a\\b\\c.txt", b""), entry("a\\d.txt", b""), entry("e.txt", b"")]);
         assert_eq!(d, vec!["a".to_string(), "a\\b".to_string()]);
+    }
+
+    #[test]
+    fn options_from_older_manifests_keep_the_start_menu_shortcut() {
+        let o: Options = serde_json::from_str(r#"{"desktop_shortcut":true}"#).unwrap();
+        assert_eq!(o, Options { start_menu_shortcut: true, desktop_shortcut: true });
+        let o: Options = serde_json::from_str(r#"{"start_menu_shortcut":false,"desktop_shortcut":false}"#).unwrap();
+        assert!(!o.start_menu_shortcut);
+        assert!(Options::default().start_menu_shortcut);
     }
 }

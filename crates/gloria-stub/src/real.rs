@@ -125,10 +125,11 @@ fn silent_setup(args: &Args, src: &Source, ex: Option<&Existing>, legacy: Vec<Fo
     }
     let clean = matches!(rel, Some(Relation::Downgrade)) || (rel == Some(Relation::Same) && args.purge);
     let remove_first = ex.filter(|e| e.manifest.is_some() && (clean || !same_dir(&e.dir, &dir))).map(|e| (e.dir.clone(), clean && args.purge));
-    let desktop = ex.and_then(|e| e.manifest.as_ref()).map(|m| m.options.desktop_shortcut).unwrap_or(false);
+    let opts = ex.and_then(|e| e.manifest.as_ref()).map(|m| m.options.clone()).unwrap_or_default();
+    let (start_menu, desktop) = (opts.start_menu_shortcut, opts.desktop_shortcut);
     // Migrating keeps the user's data unless /PURGE.
     let purge = !legacy.is_empty() && args.purge;
-    let plan = Plan { remove_first, migrate: legacy, silent: true, req: Request { dir: dir.clone(), desktop, purge, dry_run: args.dry_run, force_close: true } };
+    let plan = Plan { remove_first, migrate: legacy, silent: true, req: Request { dir: dir.clone(), start_menu, desktop, purge, dry_run: args.dry_run, force_close: true } };
     match run_plan(src, &plan, None) {
         Ok(()) => {
             if args.relaunch && !args.dry_run {
@@ -171,6 +172,7 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             a.installed = Some(e.version.clone());
             a.set_folder(e.dir.to_string_lossy().into_owned());
             if let Some(m) = &e.manifest {
+                a.start_menu = m.options.start_menu_shortcut;
                 a.desktop = m.options.desktop_shortcut;
             }
             if let Some((pid, path)) = sys::processes_in(&e.dir, None).into_iter().next() {
@@ -224,11 +226,12 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
                 app.go(Page::Progress, 0.0);
             }
             let remove_first = existing.filter(|d| clean || !same_dir(d, &dir)).map(|d| (d, clean && app.purge));
+            let start_menu = app.start_menu;
             let desktop = app.desktop;
             // From the migrate page: remove the old installs first; the data checkbox there decides `purge`.
             let migrate = if home == Page::Migrate { legacy.as_ref().clone() } else { Vec::new() };
             let purge = !migrate.is_empty() && app.purge;
-            let plan = Plan { remove_first, migrate, silent: false, req: Request { dir: dir.clone(), desktop, purge, dry_run, force_close: false } };
+            let plan = Plan { remove_first, migrate, silent: false, req: Request { dir: dir.clone(), start_menu, desktop, purge, dry_run, force_close: false } };
             let src = src.clone();
             std::thread::spawn(move || {
                 let r = run_plan(&src, &plan, Some(&job));

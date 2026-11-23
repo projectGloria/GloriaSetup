@@ -25,7 +25,6 @@
 "options.errRoot" = "Impossible d'installer à la racine d'un lecteur. Choisissez un dossier."
 "options.shortcuts" = "Raccourcis"
 "options.startMenu" = "Menu Démarrer"
-"options.always" = "Toujours"
 "options.desktop" = "Raccourci sur le Bureau"
 "options.space" = "{req} requis · {free} libres sur {drive}"
 "try" = "Essayer :"

@@ -146,6 +146,7 @@ pub fn write_probe(dir: &Path) -> bool {
 
 pub struct Request {
     pub dir: PathBuf,
+    pub start_menu: bool,
     pub desktop: bool,
     /// Remove user data (clean reinstall / downgrade, or `/PURGE`).
     pub purge: bool,
@@ -181,7 +182,7 @@ fn archive_reader(src: &Source) -> io::Result<impl Read> {
 pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fail> {
     let app = &src.m.app;
     let dir = &req.dir;
-    log!("install {} {} into {} (desktop: {}, purge: {}, dry run: {})", app.id, app.version, dir.display(), req.desktop, req.purge, req.dry_run);
+    log!("install {} {} into {} (start menu: {}, desktop: {}, purge: {}, dry run: {})", app.id, app.version, dir.display(), req.start_menu, req.desktop, req.purge, req.dry_run);
     let prev = InstallManifest::load(dir).ok().filter(|m| m.app_id == app.id);
     if let Some(p) = &prev {
         log!("replacing {} ({} files)", p.version, p.files.len());
@@ -206,7 +207,9 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
             }
         }
         let (start, desk) = shortcut_paths(app);
-        log!("[dry run] would create shortcut {:?}", start);
+        if req.start_menu {
+            log!("[dry run] would create shortcut {:?}", start);
+        }
         if req.desktop {
             log!("[dry run] would create shortcut {:?}", desk);
         }
@@ -302,7 +305,10 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         .cloned()
         .collect();
     let (start, desk) = shortcut_paths(app);
-    let mut want = vec![start];
+    let mut want = Vec::new();
+    if req.start_menu {
+        want.push(start);
+    }
     if req.desktop {
         want.push(desk);
     }
@@ -325,7 +331,7 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
         dirs,
         created_install_dir: created_dir || prev.as_ref().is_some_and(|p| p.created_install_dir),
         shortcuts: want.iter().map(|p| p.to_string_lossy().into_owned()).collect(),
-        options: Options { desktop_shortcut: req.desktop },
+        options: Options { start_menu_shortcut: req.start_menu, desktop_shortcut: req.desktop },
         data_folders: app.data_folders.clone(),
     };
     m.save(&staging).map_err(|e| fail_clean(Fail::io(&e, INSTALL_MANIFEST_NAME)))?;

@@ -181,7 +181,9 @@ Debug builds of the stub exit with code 99 just before rename `n` when `GLORIA_T
 is the registry write, `renames + 1` deleting the journal). The e2e tests use it to kill an update at each step.
 
 ### Shortcuts
-Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\<Name>.lnk`) always; desktop optional. Both target the
+Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\<Name>.lnk`) optional and on by default; desktop optional
+and off by default. Silent installs, updates and reinstalls keep the choices stored in the install manifest (an install
+manifest without `start_menu_shortcut` counts as having one). Unticking a shortcut on update removes it. Both target the
 main exe (so they show the app's icon) and carry `app_user_model_id` when the manifest has one.
 
 ### Context menu

@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "gloria-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -174,7 +174,7 @@ dependencies = [
 
 [[package]]
 name = "gloria-dummy"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gloria-core",
  "windows",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "gloria-pack"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gloria-core",
  "image",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "gloria-stub"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "gloria-core",
  "gloria-pack",

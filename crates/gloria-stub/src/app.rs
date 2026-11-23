@@ -156,6 +156,7 @@ pub enum Act {
     Start,
     Cancel,
     Choice(bool),
+    StartMenu,
     Desktop,
     Purge,
     /// "Remove everything" on the uninstall page (turns `purge` on with it).
@@ -209,6 +210,7 @@ pub struct App {
     pub page: Page,
     pub page_t0: f64,
     pub folder: String,
+    pub start_menu: bool,
     pub desktop: bool,
     pub purge: bool,
     pub wipe: bool,
@@ -248,6 +250,7 @@ impl App {
             page: Page::Welcome,
             page_t0: 0.0,
             folder,
+            start_menu: true,
             desktop: false,
             purge: false,
             wipe: false,
@@ -444,6 +447,7 @@ impl App {
                 }
             }
             Act::Choice(r) => self.repair = r,
+            Act::StartMenu => self.start_menu = !self.start_menu,
             Act::Desktop => self.desktop = !self.desktop,
             Act::Purge => {
                 self.purge = !self.purge;

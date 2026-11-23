@@ -25,7 +25,6 @@
 "options.errRoot" = "Can't install to the root of a drive. Pick a folder."
 "options.shortcuts" = "Shortcuts"
 "options.startMenu" = "Start menu"
-"options.always" = "Always"
 "options.desktop" = "Desktop shortcut"
 "options.space" = "{req} needed · {free} free on {drive}"
 "try" = "Try:"

@@ -25,7 +25,6 @@
 "options.errRoot" = "Bir sürücünün köküne kurulamaz. Bir klasör seçin."
 "options.shortcuts" = "Kısayollar"
 "options.startMenu" = "Başlat menüsü"
-"options.always" = "Her zaman"
 "options.desktop" = "Masaüstü kısayolu"
 "options.space" = "{req} gerekli · {drive} üzerinde {free} boş"
 "try" = "Dene:"
