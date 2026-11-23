@@ -156,6 +156,7 @@ pub enum Act {
     Start,
     Cancel,
     Choice(bool),
+    /// "Add to Start menu" (options and done screens).
     StartMenu,
     Desktop,
     Purge,
@@ -185,8 +186,10 @@ pub enum Effect {
     Exit(i32),
     Minimize,
     Browse,
-    /// Launch the installed app, then exit 0.
+    /// Apply the done screen's choices, launch the installed app, then exit 0.
     LaunchAndExit,
+    /// Apply the done screen's choices (real mode), then exit 0.
+    Finish,
     OpenLog,
     /// Open a web page in the default browser; the window stays.
     OpenUrl(&'static str),
@@ -210,6 +213,7 @@ pub struct App {
     pub page: Page,
     pub page_t0: f64,
     pub folder: String,
+    /// "Add to Start menu": on by default.
     pub start_menu: bool,
     pub desktop: bool,
     pub purge: bool,
@@ -486,6 +490,9 @@ impl App {
                     // Closing mid-install is a cancel; the engine rolls back and the error page says so.
                     job.lock().unwrap().cancel = true;
                     return Effect::None;
+                }
+                if self.page == Page::Done && !self.preview {
+                    return Effect::Finish;
                 }
                 return Effect::Exit(code);
             }

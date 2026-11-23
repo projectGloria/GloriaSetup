@@ -184,7 +184,9 @@ is the registry write, `renames + 1` deleting the journal). The e2e tests use it
 Start Menu (`%APPDATA%\Microsoft\Windows\Start Menu\Programs\<Name>.lnk`) optional and on by default; desktop optional
 and off by default. Silent installs, updates and reinstalls keep the choices stored in the install manifest (an install
 manifest without `start_menu_shortcut` counts as having one). Unticking a shortcut on update removes it. Both target the
-main exe (so they show the app's icon) and carry `app_user_model_id` when the manifest has one.
+main exe (so they show the app's icon) and carry `app_user_model_id` when the manifest has one. The done screen repeats
+"Add to Start menu" (same setting); on Close / Launch the setup creates or removes the Start Menu shortcut to match and
+records the choice. Shortcuts are written from the engine's worker thread, so `create_shortcut` initializes COM itself.
 
 ### Context menu
 With `context_menu` set, the install writes a classic shell verb under three HKCU roots:

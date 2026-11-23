@@ -39,6 +39,7 @@
 "done.body" = "Başlat menüsünde ve Ayarlar → Uygulamalar'da bulabilirsiniz."
 "done.updated" = "{name}, {version} sürümüne güncellendi. Ayarlarınız korundu."
 "done.launch" = "{name} uygulamasını aç"
+"done.startMenu" = "Başlat menüsüne ekle"
 "credit" = "GloriaSetup ile paketlendi"
 "update.kicker" = "Güncelleme"
 "update.title" = "{name} güncellensin mi"

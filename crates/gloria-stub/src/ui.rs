@@ -816,7 +816,8 @@ impl<'u, 'a> Ui<'u, 'a> {
         let body = self.t(if app.flow == Flow::Update { "done.updated" } else { "done.body" });
         y = self.para(P, x, y + 10.0, w, &body, MUTED);
         let folder = app.check.final_dir.to_string_lossy().into_owned();
-        self.facts(x, y + 26.0, w, &[("version", app.info.version().into(), false), ("location", folder, false)]);
+        let y = self.facts(x, y + 26.0, w, &[("version", app.info.version().into(), false), ("location", folder, false)]);
+        self.checkbox(x, y + 20.0, w, &self.t("done.startMenu"), app.start_menu, Act::StartMenu, false, None);
         self.footer(
             true,
             &[],

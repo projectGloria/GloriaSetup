@@ -39,6 +39,7 @@
 "done.body" = "Lo encontrarás en el menú Inicio y en Configuración → Aplicaciones."
 "done.updated" = "{name} se actualizó a {version}. Tu configuración se ha conservado."
 "done.launch" = "Abrir {name}"
+"done.startMenu" = "Añadir al menú Inicio"
 "credit" = "Empaquetado con GloriaSetup"
 "update.kicker" = "Actualización"
 "update.title" = "Actualizar {name}"

@@ -39,6 +39,7 @@
 "done.body" = "You'll find it in the Start menu and in Settings → Apps."
 "done.updated" = "{name} was updated to {version}. Your settings were kept."
 "done.launch" = "Launch {name}"
+"done.startMenu" = "Add to Start menu"
 "credit" = "Packaged with GloriaSetup"
 "update.kicker" = "Update"
 "update.title" = "Update {name}"

@@ -243,8 +243,10 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             });
             None
         }
-        Effect::LaunchAndExit => {
-            if !dry_run {
+        Effect::Finish | Effect::LaunchAndExit => {
+            // The done screen's "Add to Start menu" (the install already made the shortcut if it was on).
+            engine::set_start_menu(&app_m, &app.check.final_dir, app.start_menu, dry_run);
+            if eff == Effect::LaunchAndExit && !dry_run {
                 sys::launch(&app.check.final_dir.join(app_m.main_exe_rel()));
             }
             Some(0)

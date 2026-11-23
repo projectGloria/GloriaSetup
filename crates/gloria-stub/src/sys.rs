@@ -10,7 +10,10 @@ use gloria_core::registry::RegValue;
 use windows::core::{Interface, GUID, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
-use windows::Win32::System::Com::{CoCreateInstance, IPersistFile, CLSCTX_INPROC_SERVER};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    COINIT_DISABLE_OLE1DDE,
+};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -331,8 +334,28 @@ pub fn desktop_dir() -> Option<PathBuf> {
 const PKEY_APP_USER_MODEL_ID: PROPERTYKEY =
     PROPERTYKEY { fmtid: GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3), pid: 5 };
 
-/// Writes a .lnk to `target` (its icon comes from the exe), with an optional AppUserModelID.
+/// Initializes COM on the calling thread for as long as it lives (the engine runs on worker threads, where nobody
+/// else does); uninitializes only if this call did the initializing.
+struct ComScope(bool);
+
+impl ComScope {
+    fn enter() -> ComScope {
+        // S_OK / S_FALSE need a matching CoUninitialize; RPC_E_CHANGED_MODE means COM is already up in another mode.
+        ComScope(unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }.is_ok())
+    }
+}
+
+impl Drop for ComScope {
+    fn drop(&mut self) {
+        if self.0 {
+            unsafe { CoUninitialize() };
+        }
+    }
+}
+
+/// Writes a .lnk to `target` (its icon comes from the exe), with an optional AppUserModelID. Safe on any thread.
 pub fn create_shortcut(lnk: &Path, target: &Path, aumid: Option<&str>, description: &str) -> windows::core::Result<()> {
+    let _com = ComScope::enter();
     unsafe {
         let sl: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER)?;
         sl.SetPath(&HSTRING::from(target.as_os_str()))?;

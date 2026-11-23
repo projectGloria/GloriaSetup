@@ -434,6 +434,53 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
     Ok(())
 }
 
+/// Applies the done screen's "Add to Start menu" choice to a finished install: creates or removes the Start Menu
+/// shortcut and records it in the install manifest. Logged, never fatal.
+pub fn set_start_menu(app: &AppManifest, dir: &Path, on: bool, dry_run: bool) {
+    let (Some(lnk), _) = shortcut_paths(app) else { return };
+    let Ok(mut m) = InstallManifest::load(dir).map_err(|e| log!("start menu: {INSTALL_MANIFEST_NAME}: {e}")) else { return };
+    if m.app_id != app.id {
+        return;
+    }
+    let listed = m.shortcuts.iter().any(|s| norm(Path::new(s)) == norm(&lnk));
+    if on == (listed && lnk.exists()) && m.options.start_menu_shortcut == on {
+        return;
+    }
+    if dry_run {
+        log!("[dry run] would {} shortcut {}", if on { "create" } else { "remove" }, lnk.display());
+        return;
+    }
+    if on {
+        match sys::create_shortcut(&lnk, &dir.join(app.main_exe_rel()), app.app_user_model_id.as_deref(), &app.name) {
+            Ok(()) => {
+                log!("shortcut {}", lnk.display());
+                if !listed {
+                    m.shortcuts.push(lnk.to_string_lossy().into_owned());
+                }
+            }
+            Err(e) => {
+                log!("shortcut {} failed: {e}", lnk.display());
+                return;
+            }
+        }
+    } else {
+        // Only a shortcut this install made (a same-named one from elsewhere is not ours to delete).
+        if listed && lnk.exists() {
+            if let Err(e) = fs::remove_file(&lnk) {
+                log!("removing shortcut {} failed: {e}", lnk.display());
+                return;
+            }
+        }
+        log!("removed shortcut {} (Add to Start menu unticked)", lnk.display());
+        m.shortcuts.retain(|s| norm(Path::new(s)) != norm(&lnk));
+    }
+    m.options.start_menu_shortcut = on;
+    if let Err(e) = m.save(dir) {
+        log!("{INSTALL_MANIFEST_NAME}: {e}");
+    }
+    sys::notify_shell();
+}
+
 /// Undoes an install that died mid-commit (see `gloria_core::journal`). A failure here stops the run: the backups
 /// stay where they are for the next attempt.
 fn recover(dir: &Path) -> Result<(), Fail> {
