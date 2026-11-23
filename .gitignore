@@ -4,3 +4,4 @@
 /npm/bin
 /npm/*.tgz
 *.log
+[Dd]esktop.ini
