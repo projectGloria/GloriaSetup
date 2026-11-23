@@ -7,7 +7,7 @@
 Per-user Windows installer stub, packager CLI, and GitHub Action for projectGloria apps — no admin rights, single executable.
 
 <img src="https://img.shields.io/badge/Rust-1.80%2B-468437?style=flat-square" alt="Rust 1.80+" />
-<img src="https://img.shields.io/badge/version-0.2.0-2b2d34?style=flat-square" alt="Version" />
+<img src="https://img.shields.io/npm/v/gloria-setup?style=flat-square&color=2b2d34&label=version" alt="Version" />
 <img src="https://img.shields.io/badge/Windows-x64-2b2d34?style=flat-square" alt="Platform" />
 <img src="https://img.shields.io/github/last-commit/projectGloria/GloriaSetup?style=flat-square&color=468437" alt="Last commit" />
 
@@ -102,7 +102,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Build your app into app-dist\
-      - uses: projectGloria/GloriaSetup@v0.2.0
+      - uses: projectGloria/GloriaSetup@v0.2.1
         with:
           app-dir: app-dist
           manifest: gloria.toml

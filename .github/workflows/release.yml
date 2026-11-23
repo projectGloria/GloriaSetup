@@ -45,6 +45,11 @@ jobs:
             echo "::error::npm/package.json version ($NPM_VERSION) does not match Cargo.toml ($VERSION)"
             exit 1
           fi
+          README_TAG="$(sed -n 's#.*projectGloria/GloriaSetup@\(v[^[:space:]]*\).*#\1#p' README.md | head -n 1)"
+          if [[ "$README_TAG" != "v$VERSION" ]]; then
+            echo "::error::README.md uses projectGloria/GloriaSetup@$README_TAG but the version is v$VERSION; update the README example"
+            exit 1
+          fi
 
           TAG="v$VERSION"
           TAG_EXISTS="false"

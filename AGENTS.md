@@ -16,7 +16,7 @@ Per-user (no admin) Windows installer for projectGloria apps: Rust Win32/Direct2
 - `crates/gloria-stub/` — Win32 loop (`window.rs`) -> state machine (`app.rs`) -> Direct2D UI (`ui.rs`, `gfx.rs`); `real.rs` + `engine.rs` run install/uninstall/trampoline; `shot.rs` renders PNGs; `i18n/{en,es,fr,tr}.toml` (all four must have every key).
 - `action.yml` & `.github/workflows/{ci,release}.yml` — Composite GitHub Action for app repos, CI (build, signing tests, stub size, dummy action), and `v*` release workflow.
 - `examples/dummy/`, `sandbox/`, `tools/`, `docs/design.md`, `design/mockups/index.html` — Test app + icons, Windows Sandbox config, test-cert & social-preview scripts, full design doc, and approved UI mockups.
-- **Version Manifests:** `Cargo.toml` (`[workspace.package].version`, inherited by all workspace crates), `npm/package.json`.
+- **Version Manifests:** `Cargo.toml` (`[workspace.package].version`, inherited by all workspace crates), `npm/package.json`, and the `projectGloria/GloriaSetup@v<version>` example in `README.md`. All three must always show the same version; the release workflow refuses to publish when they differ.
 
 ## Personal Rules (Brain)
 - **Git Branching:** Never create new branches or git worktrees. Always work directly on `main` until explicitly told otherwise.
