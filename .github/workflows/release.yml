@@ -46,22 +46,34 @@ jobs:
             exit 1
           fi
 
+          TAG="v$VERSION"
+          TAG_EXISTS="false"
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/$TAG")" ]]; then
+            TAG_EXISTS="true"
+          fi
+
+          PREV_VERSION=""
+          if [[ -n "$BEFORE" && "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+            PREV_VERSION="$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1 || true)"
+          fi
+
+          # Push: release when the version changed or when its tag is still missing (a previous
+          # release run failed), so a failed release is retried by the next push to main.
           BUILD="false"
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             BUILD="true"
-          elif [[ -z "$BEFORE" || "$BEFORE" == "0000000000000000000000000000000000000000" ]]; then
-            BUILD="true"
-          else
-            PREV_VERSION="$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1 || true)"
+          elif [[ "$TAG_EXISTS" == "true" ]]; then
             if [[ "$PREV_VERSION" != "$VERSION" ]]; then
-              BUILD="true"
+              echo "::warning::Version changed to $VERSION but tag $TAG already exists; skipping release."
             fi
+          else
+            BUILD="true"
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          echo "Detected version=$VERSION (build=$BUILD)"
+          echo "Detected version=$VERSION previous=${PREV_VERSION:-none} tag_exists=$TAG_EXISTS (build=$BUILD)"
 
   build:
     needs: version
@@ -112,17 +124,30 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh needs the repository named explicitly.
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
           TAG: ${{ needs.version.outputs.tag }}
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           (cd dist && sha256sum gloria-pack.exe gloria-stub.exe > SHA256SUMS.txt && cat SHA256SUMS.txt)
 
-          CREATE_ARGS=(release create "$TAG" --draft --title "GloriaSetup $TAG" --generate-notes)
-          if [[ "$VERSION" == *-* ]]; then
-            CREATE_ARGS+=(--prerelease)
+          # Reuse a draft left behind by a failed run instead of creating a duplicate;
+          # refuse to overwrite a release that is already published.
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          if [[ "$IS_DRAFT" == "false" ]]; then
+            echo "::error::Release $TAG is already published; bump the version to release again."
+            exit 1
+          elif [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Reusing existing draft release $TAG"
+          else
+            CREATE_ARGS=(release create "$TAG" --draft --target "$TARGET_SHA" --title "GloriaSetup $TAG" --generate-notes)
+            if [[ "$VERSION" == *-* ]]; then
+              CREATE_ARGS+=(--prerelease)
+            fi
+            gh "${CREATE_ARGS[@]}"
           fi
-          gh "${CREATE_ARGS[@]}"
 
           gh release upload "$TAG" dist/gloria-pack.exe dist/gloria-stub.exe dist/SHA256SUMS.txt --clobber
 
@@ -156,14 +181,28 @@ jobs:
         working-directory: npm
         run: npm test
 
+      - name: Check whether this version is already on npm
+        id: npm
+        shell: bash
+        working-directory: npm
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          if npm view "gloria-setup@$VERSION" version >/dev/null 2>&1; then
+            echo "gloria-setup@$VERSION is already published; skipping npm publish."
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish to npm
-        if: ${{ !contains(needs.version.outputs.version, '-') }}
+        if: ${{ steps.npm.outputs.published != 'true' && !contains(needs.version.outputs.version, '-') }}
         shell: bash
         working-directory: npm
         run: npm publish --access public
 
       - name: Publish prerelease to npm
-        if: ${{ contains(needs.version.outputs.version, '-') }}
+        if: ${{ steps.npm.outputs.published != 'true' && contains(needs.version.outputs.version, '-') }}
         shell: bash
         working-directory: npm
         run: npm publish --access public --tag next
