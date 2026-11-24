@@ -11,6 +11,7 @@ USAGE:
               [--version <x.y.z>] [--icon <file.ico|file.png>] [--allow-default-icon]
               [--out <folder>] [--level <1-22>] [--webview2-bootstrapper <MicrosoftEdgeWebview2Setup.exe>]
               [--sign-pfx <cert.pfx> [--timestamp-url <url>] [--signtool <signtool.exe>]]
+  gloria-pack --check [--manifest <gloria.toml>] [--version <x.y.z>] [--icon <file>] [--app <folder>]
   gloria-pack --inspect <exe>
 
   --app        Folder with the app's files (main_exe must be inside).
@@ -29,6 +30,8 @@ USAGE:
   --timestamp-url
                RFC 3161 timestamp server (e.g. http://timestamp.digicert.com). Recommended for releases.
   --signtool   signtool.exe to use (default: PATH, then the newest Windows SDK).
+  --check      Validate gloria.toml (syntax and every field), the icon, and --app if given, then exit
+               without building. Run it before a long build so a bad manifest fails in seconds.
   --inspect    Print the icon sizes, version info and payload of a built exe.
 ";
 
@@ -53,6 +56,7 @@ fn run() -> Result<(), String> {
     let mut out = PathBuf::from("dist");
     let mut level = 19;
     let mut inspect = None;
+    let mut check = false;
     let mut webview2: Option<PathBuf> = None;
     let mut sign_pfx: Option<PathBuf> = None;
     let mut timestamp_url = None;
@@ -72,6 +76,7 @@ fn run() -> Result<(), String> {
             "--sign-pfx" => sign_pfx = Some(PathBuf::from(val()?)),
             "--timestamp-url" => timestamp_url = Some(val()?),
             "--signtool" => signtool = Some(PathBuf::from(val()?)),
+            "--check" => check = true,
             "--inspect" => inspect = Some(PathBuf::from(val()?)),
             "-h" | "--help" => {
                 print!("{USAGE}");
@@ -85,17 +90,23 @@ fn run() -> Result<(), String> {
         return print_inspect(&p);
     }
 
-    let app = app.ok_or_else(|| format!("--app is required\n\n{USAGE}"))?;
     let manifest = match manifest {
         Some(m) => m,
         None => {
-            let beside = app.parent().map(|p| p.join("gloria.toml"));
+            let beside = app.as_ref().and_then(|a| a.parent()).map(|p| p.join("gloria.toml"));
             match beside.filter(|p| p.is_file()) {
                 Some(p) => p,
                 None => PathBuf::from("gloria.toml"),
             }
         }
     };
+    if check {
+        let m = gloria_pack::check(&manifest, version.as_deref(), icon.as_deref(), allow_default_icon, app.as_deref())?;
+        println!("{} OK: {} {} -> {}", manifest.display(), m.name, m.version, gloria_pack::setup_file_name(&m));
+        return Ok(());
+    }
+
+    let app = app.ok_or_else(|| format!("--app is required\n\n{USAGE}"))?;
     let stub = match stub {
         Some(s) => s,
         None => std::env::current_exe()

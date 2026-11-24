@@ -91,7 +91,14 @@ cargo build --release -p gloria-stub -p gloria-pack
 cargo test --workspace
 ```
 
-### In GitHub Actions
+### Release workflow for projectGloria apps (recommended)
+
+Copy [`templates/release.yml`](templates/release.yml) to `.github/workflows/release.yml` and replace only its `build` job. It runs only when started on purpose (`gh workflow run release.yml`); pushing to `main` never releases. Its two shared jobs come from this repo at `@main`:
+
+- [`app-check.yml`](.github/workflows/app-check.yml) runs first and takes about a minute. It checks that the version files agree and that the version isn't released yet, picks the newest `gloria-setup` on npm, and runs `gloria-pack --check` on `gloria.toml`.
+- [`app-release.yml`](.github/workflows/app-release.yml) packs the staged app with that same `gloria-setup`, bundling WebView2 when `needs_webview2 = true`, and dry-runs the setup. It then publishes `v<version>` with `SHA256SUMS.txt`. Repos without `gloria.toml`, such as extensions and Android apps, get their built files published as they are. A draft left by a failed run is reused; a published release is never overwritten.
+
+### In GitHub Actions (composite action)
 
 ```yaml
 jobs:
@@ -102,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Build your app into app-dist\
-      - uses: projectGloria/GloriaSetup@v0.2.4
+      - uses: projectGloria/GloriaSetup@v0.3.0
         with:
           app-dir: app-dist
           manifest: gloria.toml
@@ -123,6 +130,12 @@ target\release\gloria-pack.exe `
   --version 1.2.0 `
   --stub target\release\gloria-stub.exe `
   --out dist
+```
+
+Validate `gloria.toml` (TOML syntax, every field, and the icon; add `--app <folder>` to check the staged app too) without building anything:
+
+```powershell
+target\release\gloria-pack.exe --check --manifest gloria.toml --version 1.2.0
 ```
 
 Inspect the icons, version metadata, and payload summary of any built installer:

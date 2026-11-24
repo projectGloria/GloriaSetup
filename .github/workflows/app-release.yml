@@ -1,0 +1,158 @@
+# Reusable: the last job of every projectGloria app release.
+# Takes the files the app's own build job uploaded and:
+#   - installer apps (gloria.toml): packs them with the gloria-setup version app-check picked (the newest on npm),
+#     bundles the WebView2 bootstrapper when needs_webview2 = true, and dry-runs the setup
+#   - other apps (browser extensions, Android, ...): publishes the uploaded files as they are
+# then publishes GitHub Release v<version> with SHA256SUMS.txt (draft -> upload -> verify -> undraft).
+#
+# Usage (in the app's .github/workflows/release.yml):
+#   release:
+#     needs: [check, build]
+#     uses: projectGloria/GloriaSetup/.github/workflows/app-release.yml@main
+#     permissions:
+#       contents: write
+#     with:
+#       version: ${{ needs.check.outputs.version }}
+#       installer: ${{ needs.check.outputs.installer == 'true' }}
+#       gloria_setup: ${{ needs.check.outputs.gloria_setup }}
+#       dry_run: ${{ inputs.dry_run }}
+name: App release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to release (from app-check)
+        type: string
+        required: true
+      installer:
+        description: Pack a GloriaSetup installer (true) or publish the uploaded files as-is (false)
+        type: boolean
+        required: true
+      gloria_setup:
+        description: gloria-setup version to pack with (from app-check)
+        type: string
+        default: ''
+      artifact:
+        description: Name of the artifact the build job uploaded (the staged app folder, or the files to publish)
+        type: string
+        default: app
+      dry_run:
+        description: Build and verify everything, but do not publish
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    if: inputs.installer
+    runs-on: windows-latest
+    steps:
+      # gloria.toml and the icon it points to.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.artifact }}
+          path: stage
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 22
+
+      - name: Pack installer
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version }}
+          GLORIA_SETUP: ${{ inputs.gloria_setup }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not $env:GLORIA_SETUP) { $env:GLORIA_SETUP = (npm view gloria-setup version).Trim() }
+          $packArgs = @('--app', 'stage', '--manifest', 'gloria.toml', '--version', $env:VERSION, '--out', 'dist')
+          if (Select-String -Path gloria.toml -Pattern '^\s*needs_webview2\s*=\s*true' -Quiet) {
+            # Bundled into the installer so nothing is downloaded at install time.
+            New-Item -ItemType Directory -Force vendor | Out-Null
+            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile vendor/MicrosoftEdgeWebview2Setup.exe
+            $sig = Get-AuthenticodeSignature vendor/MicrosoftEdgeWebview2Setup.exe
+            if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "WebView2 bootstrapper signature check failed: $($sig.Status)" }
+            $packArgs += @('--webview2-bootstrapper', 'vendor/MicrosoftEdgeWebview2Setup.exe')
+          }
+          "Packing with gloria-setup $env:GLORIA_SETUP"
+          npx --yes "gloria-setup@$env:GLORIA_SETUP" @packArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify installer (silent dry run)
+        shell: pwsh
+        run: |
+          $setup = @(Get-ChildItem dist -Filter '*_x64-setup.exe')
+          if ($setup.Count -ne 1) { throw "expected one setup in dist, found $($setup.Count)" }
+          $p = Start-Process -FilePath $setup[0].FullName -ArgumentList '/S --dry-run' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "dry run exited $($p.ExitCode)" }
+          "$($setup[0].Name) dry run OK"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-files
+          path: dist/*_x64-setup.exe
+          if-no-files-found: error
+          compression-level: 0
+
+  publish:
+    needs: pack
+    # Runs after pack, or right away when there is nothing to pack (pack skipped).
+    if: ${{ !cancelled() && !failure() && !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: ${{ inputs.installer && 'release-files' || inputs.artifact }}
+          path: dist
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+          VERSION: ${{ inputs.version }}
+          INSTALLER: ${{ inputs.installer }}
+          GLORIA_SETUP: ${{ inputs.gloria_setup }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          shopt -s nullglob
+          FILES=(dist/*)
+          if [[ ${#FILES[@]} -eq 0 ]]; then echo "::error::nothing to publish"; exit 1; fi
+          (cd dist && sha256sum -- * > ../SHA256SUMS.txt) && mv SHA256SUMS.txt dist/ && cat dist/SHA256SUMS.txt
+
+          NOTES="Release $TAG."
+          if [[ "$INSTALLER" == "true" ]]; then
+            NOTES="Windows installer built with [GloriaSetup](https://github.com/projectGloria/GloriaSetup) $GLORIA_SETUP."
+          fi
+
+          # Reuse a draft left by a failed run; never overwrite a published release.
+          IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo missing)"
+          if [[ "$IS_DRAFT" == "false" ]]; then
+            echo "::error::Release $TAG is already published; bump the version to release again."
+            exit 1
+          elif [[ "$IS_DRAFT" == "true" ]]; then
+            echo "Reusing draft release $TAG"
+            gh release edit "$TAG" --target "$TARGET_SHA" --notes "$NOTES"
+          else
+            ARGS=(release create "$TAG" --draft --target "$TARGET_SHA" --title "$TAG" --notes "$NOTES")
+            if [[ "$VERSION" == *-* ]]; then ARGS+=(--prerelease); fi
+            gh "${ARGS[@]}"
+          fi
+
+          gh release upload "$TAG" dist/* --clobber
+
+          mkdir -p verify
+          gh release download "$TAG" --dir verify --clobber
+          (cd verify && sha256sum --check SHA256SUMS.txt)
+
+          gh release edit "$TAG" --draft=false
+          echo "Published https://github.com/$GH_REPO/releases/tag/$TAG"

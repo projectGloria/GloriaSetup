@@ -93,39 +93,67 @@ fn patched_stub(stub: &[u8], dest: &Path, icon: Option<&[IconImage]>, vi: Vec<u8
     bytes
 }
 
-pub fn pack(o: &Options) -> Result<Packed, String> {
-    let app = load_manifest(&o.manifest, o.version.as_deref())?;
-    let manifest_dir = o.manifest.parent().unwrap_or(Path::new("."));
-
-    // App folder checks.
-    if !o.app_dir.is_dir() {
-        return Err(format!("app folder {} does not exist", o.app_dir.display()));
+/// Checks the app folder: it exists, holds `main_exe`, and has none of the names GloriaSetup writes itself.
+pub fn check_app_dir(app: &AppManifest, app_dir: &Path) -> Result<(), String> {
+    if !app_dir.is_dir() {
+        return Err(format!("app folder {} does not exist", app_dir.display()));
     }
     for reserved in [UNINSTALLER_NAME, INSTALL_MANIFEST_NAME, WORK_DIR, WEBVIEW2_DIR] {
-        if o.app_dir.join(reserved).exists() {
+        if app_dir.join(reserved).exists() {
             return Err(format!(
                 "the app folder contains {reserved:?}, which GloriaSetup writes itself; remove it from {}",
-                o.app_dir.display()
+                app_dir.display()
             ));
         }
     }
-    if !o.app_dir.join(app.main_exe_rel()).is_file() {
-        return Err(format!("main_exe {:?} is not in {}", app.main_exe, o.app_dir.display()));
+    if !app_dir.join(app.main_exe_rel()).is_file() {
+        return Err(format!("main_exe {:?} is not in {}", app.main_exe, app_dir.display()));
     }
+    Ok(())
+}
 
-    // Icon.
-    let icon_path = match (&o.icon, &app.icon) {
-        (Some(p), _) => Some(p.clone()),
+/// Loads the installer icon: `--icon` first, then `icon` in gloria.toml (relative to the manifest).
+/// `None` means a TEST BUILD with the GloriaSetup icon, allowed only with `allow_default_icon`.
+pub fn load_icon(
+    app: &AppManifest,
+    manifest: &Path,
+    icon_override: Option<&Path>,
+    allow_default_icon: bool,
+) -> Result<Option<Vec<IconImage>>, String> {
+    let manifest_dir = manifest.parent().unwrap_or(Path::new("."));
+    let icon_path = match (icon_override, &app.icon) {
+        (Some(p), _) => Some(p.to_path_buf()),
         (None, Some(rel)) => Some(manifest_dir.join(rel)),
         (None, None) => None,
     };
-    let icons = match icon_path {
-        Some(p) => Some(icon::load(&p)?),
-        None if o.allow_default_icon => None,
-        None => {
-            return Err("no icon: set `icon` in gloria.toml or pass --icon (or --allow-default-icon for a test build)".into())
-        }
-    };
+    match icon_path {
+        Some(p) => Ok(Some(icon::load(&p)?)),
+        None if allow_default_icon => Ok(None),
+        None => Err("no icon: set `icon` in gloria.toml or pass --icon (or --allow-default-icon for a test build)".into()),
+    }
+}
+
+/// Everything `pack` checks before building, without a stub or output: gloria.toml (TOML syntax and
+/// every field), the icon, and the app folder when given. Lets CI fail in seconds, not after the build.
+pub fn check(
+    manifest: &Path,
+    version: Option<&str>,
+    icon_override: Option<&Path>,
+    allow_default_icon: bool,
+    app_dir: Option<&Path>,
+) -> Result<AppManifest, String> {
+    let app = load_manifest(manifest, version)?;
+    load_icon(&app, manifest, icon_override, allow_default_icon)?;
+    if let Some(dir) = app_dir {
+        check_app_dir(&app, dir)?;
+    }
+    Ok(app)
+}
+
+pub fn pack(o: &Options) -> Result<Packed, String> {
+    let app = load_manifest(&o.manifest, o.version.as_deref())?;
+    check_app_dir(&app, &o.app_dir)?;
+    let icons = load_icon(&app, &o.manifest, o.icon.as_deref(), o.allow_default_icon)?;
     let test_build = icons.is_none();
     let test_flag = if test_build { FLAG_TEST_BUILD } else { 0 };
 

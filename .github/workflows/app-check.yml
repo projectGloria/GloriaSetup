@@ -1,0 +1,121 @@
+# Reusable: the first job of every projectGloria app release.
+# Runs in about a minute, before the app's (long) build, and fails fast on:
+#   - version files that disagree (gloria.toml, package.json, tauri.conf.json, Cargo.toml)
+#   - a version that is already released (bump it first)
+#   - a gloria.toml that gloria-pack would reject (TOML syntax, fields, icon)
+# It also picks the newest gloria-setup on npm once, so the pack step uses exactly that version.
+#
+# Usage (in the app's .github/workflows/release.yml):
+#   check:
+#     uses: projectGloria/GloriaSetup/.github/workflows/app-check.yml@main
+name: App check
+
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Version to release (no leading v)
+        value: ${{ jobs.check.outputs.version }}
+      tag:
+        description: Release tag (v<version>)
+        value: ${{ jobs.check.outputs.tag }}
+      installer:
+        description: "'true' when the repo has gloria.toml (pack a GloriaSetup installer), else 'false' (publish the build's files as-is)"
+        value: ${{ jobs.check.outputs.installer }}
+      gloria_setup:
+        description: Newest gloria-setup version on npm at check time (empty when installer is false)
+        value: ${{ jobs.check.outputs.gloria_setup }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      installer: ${{ steps.version.outputs.installer }}
+      gloria_setup: ${{ steps.gloria.outputs.gloria_setup }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Read and cross-check version files
+        id: version
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $found = [ordered]@{}
+
+          function Get-TomlVersion([string]$path, [string]$table) {
+            # Top-level `version = "..."` (table = '') or the one inside [table].
+            $current = ''
+            foreach ($line in Get-Content $path) {
+              if ($line -match '^\s*\[([^\]]+)\]\s*$') { $current = $Matches[1].Trim(); continue }
+              if ($current -eq $table -and $line -match '^\s*version\s*=\s*["'']([^"'']+)["'']') { return $Matches[1] }
+            }
+            return $null
+          }
+
+          if (Test-Path gloria.toml) { $found['gloria.toml'] = Get-TomlVersion gloria.toml '' }
+          foreach ($f in 'package.json', 'src-tauri/tauri.conf.json') {
+            if (Test-Path $f) {
+              $v = (Get-Content $f -Raw | ConvertFrom-Json).version
+              if ($v) { $found[$f] = $v }
+            }
+          }
+          foreach ($f in 'Cargo.toml', 'src-tauri/Cargo.toml') {
+            if (Test-Path $f) {
+              $v = Get-TomlVersion $f 'package'
+              if (-not $v) { $v = Get-TomlVersion $f 'workspace.package' }
+              if ($v) { $found[$f] = $v }
+            }
+          }
+          if ($found.Count -eq 0) { throw 'No version found: add gloria.toml (desktop apps) or a version in package.json.' }
+
+          $found.GetEnumerator() | ForEach-Object { "{0,-28} {1}" -f $_.Key, $_.Value }
+          $version = @($found.Values)[0] -replace '^v', ''
+          $bad = @($found.GetEnumerator() | Where-Object { ($_.Value -replace '^v', '') -ne $version })
+          if ($bad.Count) {
+            "::error::Version files disagree. Set every file to the same version: " + (($found.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join ', ')
+            exit 1
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { "::error::'$version' is not a version like 1.2.0 or 1.2.0-alpha.1"; exit 1 }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=v$version" >> $env:GITHUB_OUTPUT
+          "installer=$((Test-Path gloria.toml).ToString().ToLower())" >> $env:GITHUB_OUTPUT
+
+      - name: Refuse a version that is already released
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          # A read-only token cannot see drafts, so a draft left by a failed run passes here and is reused by publish.
+          $draft = gh release view $env:TAG --json isDraft --jq .isDraft 2>$null
+          if ($LASTEXITCODE -eq 0 -and $draft -eq 'false') {
+            "::error::$env:TAG is already released. Bump the version (all version files) and run the release again."
+            exit 1
+          }
+          "$env:TAG is not released yet."
+          exit 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: steps.version.outputs.installer == 'true'
+        with:
+          node-version: 22
+
+      - name: Pick the newest gloria-setup and validate gloria.toml
+        id: gloria
+        if: steps.version.outputs.installer == 'true'
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $gs = (npm view gloria-setup version).Trim()
+          if ($LASTEXITCODE -ne 0 -or -not $gs) { throw 'npm view gloria-setup version failed' }
+          "Using gloria-setup $gs"
+          "gloria_setup=$gs" >> $env:GITHUB_OUTPUT
+          npx --yes "gloria-setup@$gs" --check --manifest gloria.toml --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) { "::error::gloria.toml is invalid (see above). Fix it locally with: npx gloria-setup --check"; exit 1 }

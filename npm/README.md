@@ -19,6 +19,12 @@ npx gloria-pack --app path\to\built\app --manifest gloria.toml --version 1.2.0 -
 npx gloria-pack --inspect dist\MyApp_1.2.0_x64-setup.exe
 ```
 
+Validate `gloria.toml` (TOML syntax, every field, and the icon) in about a second, before a long build. It builds nothing and exits non-zero on the first problem:
+
+```powershell
+npx gloria-pack --check --manifest gloria.toml --version 1.2.0
+```
+
 For Authenticode signing, pass the PFX password via `GLORIA_SIGN_PASSWORD`:
 
 ```powershell

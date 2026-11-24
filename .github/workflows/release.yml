@@ -1,16 +1,15 @@
 name: Release
 
-# Automatically builds and publishes GitHub Releases + npm (`gloria-setup`) when Cargo.toml and
-# npm/package.json bump version on `main`, or when triggered manually via workflow_dispatch.
+# Builds and publishes a GitHub Release + npm (`gloria-setup`) for the version in Cargo.toml.
+# Runs only when started on purpose (`gh workflow run release.yml`, or /monjita-github-release);
+# pushing to main never releases. Fails if that version is already released.
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       dry_run:
         description: Build and test without publishing a GitHub Release or npm package
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -31,8 +30,7 @@ jobs:
         id: check
         shell: bash
         env:
-          EVENT_NAME: ${{ github.event_name }}
-          BEFORE: ${{ github.event.before }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
@@ -57,28 +55,16 @@ jobs:
             TAG_EXISTS="true"
           fi
 
-          PREV_VERSION=""
-          if [[ -n "$BEFORE" && "$BEFORE" != "0000000000000000000000000000000000000000" ]]; then
-            PREV_VERSION="$(git show "${BEFORE}:Cargo.toml" 2>/dev/null | sed -n 's/^version = "\([^"]*\)"/\1/p' | head -n 1 || true)"
-          fi
-
-          # Push: release when the version changed or when its tag is still missing (a previous
-          # release run failed), so a failed release is retried by the next push to main.
-          BUILD="false"
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            BUILD="true"
-          elif [[ "$TAG_EXISTS" == "true" ]]; then
-            if [[ "$PREV_VERSION" != "$VERSION" ]]; then
-              echo "::warning::Version changed to $VERSION but tag $TAG already exists; skipping release."
-            fi
-          else
-            BUILD="true"
+          BUILD="true"
+          if [[ "$TAG_EXISTS" == "true" && "$DRY_RUN" != "true" ]]; then
+            echo "::error::$TAG is already released. Bump the version in Cargo.toml, npm/package.json and README.md first."
+            exit 1
           fi
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "build=$BUILD" >> "$GITHUB_OUTPUT"
-          echo "Detected version=$VERSION previous=${PREV_VERSION:-none} tag_exists=$TAG_EXISTS (build=$BUILD)"
+          echo "Detected version=$VERSION tag_exists=$TAG_EXISTS dry_run=$DRY_RUN"
 
   build:
     needs: version
@@ -115,7 +101,7 @@ jobs:
 
   publish:
     needs: [version, build]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || !inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && !inputs.dry_run
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -164,7 +150,7 @@ jobs:
 
   publish-npm:
     needs: [version, publish]
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || !inputs.dry_run)
+    if: github.ref == 'refs/heads/main' && !inputs.dry_run
     runs-on: windows-latest
     permissions:
       contents: read
