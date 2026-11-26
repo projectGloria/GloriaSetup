@@ -18,12 +18,14 @@ pub struct Options {
     /// Missing in manifests written before the Start Menu shortcut became optional: those always had one.
     #[serde(default = "yes")]
     pub start_menu_shortcut: bool,
+    /// Missing means no: a manifest without it can't say, and an unwanted shortcut is worse than a missing one.
+    #[serde(default)]
     pub desktop_shortcut: bool,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { start_menu_shortcut: true, desktop_shortcut: false }
+        Options { start_menu_shortcut: true, desktop_shortcut: true }
     }
 }
 
@@ -388,5 +390,8 @@ mod tests {
         let o: Options = serde_json::from_str(r#"{"start_menu_shortcut":false,"desktop_shortcut":false}"#).unwrap();
         assert!(!o.start_menu_shortcut);
         assert!(Options::default().start_menu_shortcut);
+        let o: Options = serde_json::from_str("{}").unwrap();
+        assert_eq!(o, Options { start_menu_shortcut: true, desktop_shortcut: false });
+        assert!(Options::default().desktop_shortcut);
     }
 }

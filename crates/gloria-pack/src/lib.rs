@@ -51,7 +51,7 @@ pub fn load_manifest(path: &Path, version: Option<&str>) -> Result<AppManifest, 
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut m: AppManifest = toml_parse(&text)?;
     if let Some(v) = version {
-        m.version = v.strip_prefix('v').unwrap_or(v).to_string();
+        m.version = v.strip_prefix(['v', 'V']).unwrap_or(v).to_string();
     }
     m.validate()?;
     Ok(m)

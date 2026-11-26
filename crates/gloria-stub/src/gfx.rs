@@ -179,9 +179,6 @@ const FONT_FILES: [&[u8]; 11] = [
     include_bytes!("../../../assets/fonts/JetBrainsMono-700.ttf"),
 ];
 
-/// The mono font file, also loaded into GDI for the native path field.
-pub const MONO_TTF: &[u8] = include_bytes!("../../../assets/fonts/JetBrainsMono-400.ttf");
-
 #[derive(Clone, Copy, Debug, Default)]
 struct Metrics {
     asc: f32,

@@ -8,7 +8,9 @@ use gloria_core::legacy;
 use gloria_core::paths::{is_within, norm};
 use gloria_core::registry::RegValue;
 use windows::core::{Interface, GUID, HSTRING, PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, HWND, LPARAM, WAIT_OBJECT_0, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_FILE_NOT_FOUND, ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS, HWND, LPARAM, WAIT_ABANDONED, WAIT_OBJECT_0, WPARAM,
+};
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0, PROPVARIANT_0_0_0};
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
@@ -19,8 +21,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Registry::*;
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    CreateEventW, CreateMutexW, GetCurrentProcessId, GetExitCodeProcess, OpenEventW, OpenProcess,
+    QueryFullProcessImageNameW, SetEvent, TerminateProcess, WaitForMultipleObjects, WaitForSingleObject,
+    EVENT_MODIFY_STATE, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
 };
 use windows::Win32::System::Variant::VT_LPWSTR;
 use windows::Win32::Foundation::PROPERTYKEY;
@@ -269,7 +272,12 @@ pub fn run_wait(exe: &Path, args: &str, elevate: bool, timeout: Duration) -> Res
         loop {
             match child.try_wait() {
                 Ok(Some(s)) => return Ok(Some(s.code().unwrap_or(1) as u32)),
-                Ok(None) if Instant::now() >= end => return Ok(None),
+                Ok(None) if Instant::now() >= end => {
+                    // Don't leave it running behind us (an elevated child can't be killed from here; that branch only waits).
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Ok(None);
+                }
                 Ok(None) => std::thread::sleep(Duration::from_millis(200)),
                 Err(e) => return Err(RunError::Other(e.to_string())),
             }
@@ -400,12 +408,19 @@ pub fn notify_shell() {
 pub fn image_path(pid: u32) -> Option<PathBuf> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = [0u16; 1024];
-        let mut len = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+        // Long paths can exceed MAX_PATH; grow the buffer up to the 32K-unit limit.
+        let mut size = 1024usize;
+        let r = loop {
+            let mut buf = vec![0u16; size];
+            let mut len = buf.len() as u32;
+            match QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len) {
+                Ok(()) => break Some(PathBuf::from(String::from_utf16_lossy(&buf[..len as usize]))),
+                Err(e) if size < 32768 && e.code() == ERROR_INSUFFICIENT_BUFFER.to_hresult() => size *= 4,
+                Err(_) => break None,
+            }
+        };
         let _ = CloseHandle(h);
-        ok.ok()?;
-        Some(PathBuf::from(String::from_utf16_lossy(&buf[..len as usize])))
+        r
     }
 }
 
@@ -547,11 +562,105 @@ pub fn spawn(exe: &Path, args: &str) -> std::io::Result<u32> {
 /// then removes them.
 pub fn delete_self_later(also: Option<&Path>) {
     let Ok(me) = std::env::current_exe() else { return };
-    let mut cmd = format!(r#"/d /c ping 127.0.0.1 -n 3 >nul & del /f /q "{}""#, me.display());
+    // The paths travel as environment variables: cmd expands `%NAME%` once and never re-reads the result, so a `%`
+    // (or `^`, `&`) in a folder name stays literal.
+    let mut c = std::process::Command::new("cmd.exe");
+    let mut cmd = String::from(r#"/d /c ping 127.0.0.1 -n 3 >nul & del /f /q "%GLORIA_DEL_SELF%""#);
+    c.env("GLORIA_DEL_SELF", &me);
     if let Some(p) = also {
-        cmd += &format!(r#" & del /f /q "{}" 2>nul"#, p.display());
+        cmd += r#" & del /f /q "%GLORIA_DEL_ALSO%" 2>nul"#;
+        c.env("GLORIA_DEL_ALSO", p);
     }
-    let _ = std::process::Command::new("cmd.exe").raw_arg(cmd).creation_flags(CREATE_NO_WINDOW).spawn();
+    let _ = c.raw_arg(cmd).creation_flags(CREATE_NO_WINDOW).spawn();
+}
+
+/// Holds `Local\GloriaSetup-<id>` for the rest of the process, so two setups (or a setup and an uninstall) of the
+/// same app never run their engines at once. Waits up to `timeout` for another holder; false if it never let go.
+pub fn instance_lock(id: &str, timeout: Duration) -> bool {
+    let name = HSTRING::from(format!(r"Local\GloriaSetup-{id}"));
+    unsafe {
+        let Ok(h) = CreateMutexW(None, false, &name) else { return true };
+        // WAIT_ABANDONED (a crashed holder) also hands us ownership. The handle is never closed: the process exit
+        // releases it.
+        let r = WaitForSingleObject(h, timeout.as_millis().min(u32::MAX as u128 - 1) as u32);
+        r == WAIT_OBJECT_0 || r == WAIT_ABANDONED
+    }
+}
+
+fn result_event_name(id: &str, pid: u32, code: i32) -> HSTRING {
+    HSTRING::from(format!(r"Local\GloriaSetup-{id}-{pid}-result-{code}"))
+}
+
+/// Exit codes a trampoline can report (see `gloria_core::exit`).
+const RESULT_CODES: std::ops::RangeInclusive<i32> = 0..=6;
+
+/// Silent `uninstall.exe`: one named event per exit code, so the trampoline (which deletes this exe once it has
+/// exited) can hand back its result while this process still waits for it.
+pub struct ResultEvents(Vec<windows::Win32::Foundation::HANDLE>);
+
+impl ResultEvents {
+    pub fn create(id: &str) -> Option<ResultEvents> {
+        let pid = current_pid();
+        let mut v = Vec::new();
+        for c in RESULT_CODES {
+            match unsafe { CreateEventW(None, true, false, &result_event_name(id, pid, c)) } {
+                Ok(h) => v.push(h),
+                Err(_) => {
+                    drop(ResultEvents(v));
+                    return None;
+                }
+            }
+        }
+        Some(ResultEvents(v))
+    }
+
+    /// The code the trampoline `pid` reported, its own exit code if it ended without reporting, or `None` on timeout.
+    pub fn wait(&self, pid: u32, timeout: Duration) -> Option<i32> {
+        unsafe {
+            let child = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok();
+            let mut handles = self.0.clone();
+            handles.extend(child);
+            let r = WaitForMultipleObjects(&handles, false, timeout.as_millis().min(u32::MAX as u128 - 1) as u32);
+            let i = r.0.wrapping_sub(WAIT_OBJECT_0.0) as usize;
+            let out = if i < self.0.len() {
+                Some(i as i32 + RESULT_CODES.start())
+            } else if i == self.0.len() && child.is_some() {
+                let mut code = 1u32;
+                let _ = GetExitCodeProcess(child.unwrap(), &mut code);
+                Some(code as i32)
+            } else {
+                None
+            };
+            if let Some(h) = child {
+                let _ = CloseHandle(h);
+            }
+            out
+        }
+    }
+}
+
+impl Drop for ResultEvents {
+    fn drop(&mut self) {
+        for h in &self.0 {
+            unsafe {
+                let _ = CloseHandle(*h);
+            }
+        }
+    }
+}
+
+/// The trampoline's side of [`ResultEvents`]: tells the waiting `uninstall.exe` (`pid`) how the uninstall went.
+pub fn report_result(id: &str, pid: u32, code: i32) {
+    let code = if RESULT_CODES.contains(&code) { code } else { 1 };
+    unsafe {
+        match OpenEventW(EVENT_MODIFY_STATE, false, &result_event_name(id, pid, code)) {
+            Ok(h) => {
+                let _ = SetEvent(h);
+                let _ = CloseHandle(h);
+            }
+            Err(e) => log!("could not report exit code {code} to {pid}: {e}"),
+        }
+    }
 }
 
 pub fn current_pid() -> u32 {

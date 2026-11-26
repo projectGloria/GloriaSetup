@@ -37,7 +37,10 @@ npx gloria-pack --app path\to\built\app --manifest gloria.toml --sign-pfx C:\Use
 Both ESM and CommonJS are supported:
 
 ```js
-import { pack, inspect, packPath, stubPath } from "gloria-setup";
+import { check, pack, inspect, packPath, stubPath } from "gloria-setup";
+
+// Fails in about a second (throws with the reason) if gloria.toml or the icon is wrong.
+check({ manifest: "gloria.toml", version: "1.2.0", appDir: "dist/app" });
 
 const res = pack({
   appDir: "dist/app",

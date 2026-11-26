@@ -57,7 +57,7 @@ pub fn all(dir: &Path, scale: f32, mut make: impl FnMut(&str) -> App) -> Result<
             // `welcome-link-hover`: the welcome page with the pointer over the footer's GitHub link.
             let hover = *id == "welcome-link-hover";
             app.preview_page(if hover { "welcome" } else { id });
-            let mut inp = Input { field_text: true, ..Default::default() };
+            let mut inp = Input::default();
             if hover {
                 inp.hover = Some(Act::OpenGithub);
                 inp.link = 1.0;

@@ -192,8 +192,13 @@ pub fn parse_version_info(b: &[u8]) -> Option<([u16; 4], Vec<(String, String)>)>
         }
         Some((String::from_utf16_lossy(&units), (o + 3) & !3))
     }
-    fn walk(b: &[u8], start: usize, out: &mut Vec<(String, String)>, fixed: &mut [u16; 4]) -> Option<usize> {
+    fn walk(b: &[u8], start: usize, depth: u32, out: &mut Vec<(String, String)>, fixed: &mut [u16; 4]) -> Option<usize> {
         let len = rd16(b, start)? as usize;
+        // A block shorter than its own header (or past the end) would loop forever or read garbage; real files nest
+        // four levels deep at most.
+        if len < 6 || start + len > b.len() || depth > 8 {
+            return None;
+        }
         let vlen = rd16(b, start + 2)? as usize;
         let text = rd16(b, start + 4)? == 1;
         let (key, mut o) = key_end(b, start + 6)?;
@@ -212,14 +217,14 @@ pub fn parse_version_info(b: &[u8]) -> Option<([u16; 4], Vec<(String, String)>)>
         }
         o = (o + 3) & !3;
         while o + 6 <= end {
-            let n = walk(b, o, out, fixed)?;
+            let n = walk(b, o, depth + 1, out, fixed)?;
             o = (n + 3) & !3;
         }
         Some(end)
     }
     let mut out = Vec::new();
     let mut fixed = [0u16; 4];
-    walk(b, 0, &mut out, &mut fixed)?;
+    walk(b, 0, 0, &mut out, &mut fixed)?;
     Some((fixed, out))
 }
 
@@ -267,6 +272,18 @@ mod tests {
         for (k, v) in &strings {
             assert!(got.iter().any(|(gk, gv)| gk == k && gv == v), "{k} missing in {got:?}");
         }
+    }
+
+    #[test]
+    fn version_info_rejects_bad_lengths() {
+        // A zero-length child used to loop forever.
+        let mut b = version_info(&VersionInfo { file_version: [1, 0, 0, 0], product_version: [1, 0, 0, 0], strings: &[("A".into(), "b".into())] });
+        let n = b.len();
+        b.extend_from_slice(&[0u8; 8]);
+        b[0..2].copy_from_slice(&((n + 8) as u16).to_le_bytes());
+        assert!(parse_version_info(&b).is_none());
+        assert!(parse_version_info(&[0, 0, 0, 0, 0, 0]).is_none());
+        assert!(parse_version_info(&[0xff, 0xff, 0, 0, 0, 0, 0, 0]).is_none());
     }
 
     #[test]

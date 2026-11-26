@@ -148,7 +148,7 @@ mod tests {
     fn fills_placeholders() {
         let s = Strings::new("en", vec![("name", "Foo".into())]);
         assert_eq!(s.t("setup"), "Foo Setup");
-        assert_eq!(s.tv("options.space", &[("req", "1 MB"), ("free", "2 GB"), ("drive", "C:")]), "1 MB needed · 2 GB free on C:");
+        assert_eq!(s.tv("data.total", &[("size", "1 MB")]), "1 MB · deleted permanently");
         assert_eq!(fill("{a} {b", |_| Some("x".into())), "x {b");
         let tr = Strings::new("tr", vec![]);
         assert_eq!(tr.upper("kaldırma iptal"), "KALDIRMA İPTAL");

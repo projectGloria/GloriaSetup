@@ -8,12 +8,20 @@ pub const DATA_ROOTS: [&str; 3] = ["APPDATA", "LOCALAPPDATA", "USERPROFILE"];
 /// Shared folders that may never be declared as (or be the parent chain of) app data.
 const DENY: &[(&str, &[&str])] = &[
     ("APPDATA", &["microsoft", "temp", "programs"]),
-    ("LOCALAPPDATA", &["programs", "temp", "microsoft", "packages", "low", "virtualstore", "d3dscache", "crashdumps"]),
+    (
+        "LOCALAPPDATA",
+        &[
+            "programs", "temp", "microsoft", "packages", "low", "virtualstore", "d3dscache", "crashdumps", "history",
+            "temporary internet files", "application data", "comms", "connecteddevicesplatform", "publishers",
+        ],
+    ),
     (
         "USERPROFILE",
         &[
             "documents", "desktop", "downloads", "pictures", "music", "videos", "appdata", "onedrive", "favorites",
-            "links", "contacts", "searches", "saved games", "3d objects", "source", "repos", ".ssh",
+            "links", "contacts", "searches", "saved games", "3d objects", "source", "repos", ".ssh", "application data",
+            "local settings", "my documents", "cookies", "recent", "sendto", "start menu", "templates", "printhood",
+            "nethood", ".config", ".gnupg", ".aws", ".docker", ".vscode",
         ],
     ),
 ];
@@ -81,25 +89,25 @@ pub fn parse_data_folder(s: &str) -> Result<DataFolder, String> {
         if *c == "." || *c == ".." {
             return bad("'.' and '..' are not allowed");
         }
-        if c.contains(['*', '?', ':', '%', '<', '>', '|', '"']) {
+        if c.contains(['*', '?', ':', '%', '<', '>', '|', '"']) || c.chars().any(char::is_control) {
             return bad("wildcards, drive letters, variables and reserved characters are not allowed");
         }
         if c.ends_with(['.', ' ']) || c.starts_with(' ') {
             return bad("components may not start with a space or end with a dot or space");
         }
+        if is_reserved_name(c) {
+            return bad("reserved device names (CON, NUL, COM1, ...) are not allowed");
+        }
+        if is_short_name(c) {
+            return bad("8.3 short names (like PROGRA~1) are not allowed; use the long name");
+        }
         out.push(c.to_string());
     }
-    // Deny-list: the first component may not be a shared folder.
+    // Deny-list: neither a shared folder nor anything inside one (`%APPDATA%\Microsoft\X` is as shared as
+    // `%APPDATA%\Microsoft`, and `Documents\X` is user content, not app data).
     if let Some((_, deny)) = DENY.iter().find(|(r, _)| *r == root_up) {
-        if deny.contains(&out[0].to_ascii_lowercase().as_str()) && out.len() == 1 {
-            return bad("is a shared Windows folder");
-        }
-        // Even deeper, Documents\X etc. is user content, not app data.
-        if root_up == "USERPROFILE" && deny.contains(&out[0].to_ascii_lowercase().as_str()) {
-            return bad("is inside a shared user folder");
-        }
-        if root_up == "LOCALAPPDATA" && ["programs", "temp"].contains(&out[0].to_ascii_lowercase().as_str()) {
-            return bad("is inside a shared folder");
+        if deny.contains(&out[0].to_ascii_lowercase().as_str()) {
+            return bad(if out.len() == 1 { "is a shared Windows folder" } else { "is inside a shared folder" });
         }
     }
     Ok(DataFolder { root: root_up, rest: out })
@@ -112,6 +120,21 @@ pub fn is_local_absolute(p: &Path) -> bool {
         (Some(Component::Prefix(px)), Some(Component::RootDir))
             if matches!(px.kind(), Prefix::Disk(_) | Prefix::VerbatimDisk(_))
     )
+}
+
+/// `CON`, `NUL`, `COM1`, `lpt9.txt`, ...: names Windows maps to devices, with or without an extension.
+pub fn is_reserved_name(c: &str) -> bool {
+    let stem = c.split('.').next().unwrap_or(c).trim_end().to_uppercase();
+    if matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") {
+        return true;
+    }
+    let digit = |s: &str| matches!(s, "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³");
+    ["COM", "LPT"].iter().any(|p| stem.strip_prefix(p).is_some_and(digit))
+}
+
+/// Looks like an 8.3 short name (`PROGRA~1`): it could alias a blocked folder, so the long name is required.
+pub fn is_short_name(c: &str) -> bool {
+    c.as_bytes().windows(2).any(|w| w[0] == b'~' && w[1].is_ascii_digit())
 }
 
 /// Lowercased, `/`→`\`, no trailing separator. Used for prefix comparisons on Windows paths.
@@ -139,25 +162,44 @@ pub enum PathProblem {
     SystemFolder,
     /// Overlaps a declared data folder.
     DataFolder,
+    /// A shared root like `%LOCALAPPDATA%` or the profile folder itself: fine as a parent, never as the folder.
+    SharedRoot,
     BadCharacters,
 }
 
 /// Environment the install-folder check needs. Built from the real environment at run time.
 #[derive(Debug, Clone, Default)]
 pub struct SystemDirs {
+    /// Never install in or under these.
     pub blocked: Vec<PathBuf>,
+    /// Never install directly into these (shared roots whose subfolders are fine, like `%LOCALAPPDATA%`).
+    pub roots: Vec<PathBuf>,
 }
 
 impl SystemDirs {
+    /// `env` should give long (not 8.3) paths; the stub expands them before calling this.
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> SystemDirs {
+        let get = |v: &str| env(v).filter(|x| !x.is_empty()).map(PathBuf::from);
         let mut blocked = Vec::new();
         for v in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "WINDIR", "SystemRoot", "ProgramData", "TEMP", "TMP"]
         {
-            if let Some(x) = env(v).filter(|x| !x.is_empty()) {
-                blocked.push(PathBuf::from(x));
-            }
+            blocked.extend(get(v));
         }
-        SystemDirs { blocked }
+        let mut roots = Vec::new();
+        if let Some(home) = get("USERPROFILE") {
+            roots.extend(home.parent().map(Path::to_path_buf));
+            for sub in ["Desktop", "Documents", "Downloads", "AppData", "OneDrive"] {
+                roots.push(home.join(sub));
+            }
+            roots.push(home);
+        }
+        roots.extend(get("APPDATA"));
+        if let Some(local) = get("LOCALAPPDATA") {
+            roots.push(local.join("Programs"));
+            roots.push(local.join("Programs").join(SUITE_DIR));
+            roots.push(local);
+        }
+        SystemDirs { blocked, roots }
     }
 }
 
@@ -175,7 +217,16 @@ pub fn check_install_dir(p: &Path, sys: &SystemDirs, data: &[PathBuf]) -> Result
     }
     for c in p.components().skip(2) {
         let c = c.as_os_str().to_string_lossy();
-        if c == "." || c == ".." || c.contains(['*', '?', ':', '<', '>', '|', '"']) {
+        // Windows drops trailing dots/spaces (`Program Files.` is `Program Files`) and maps 8.3 names to long ones,
+        // so either could slip past the folder checks below.
+        if c == "."
+            || c == ".."
+            || c.contains(['*', '?', ':', '<', '>', '|', '"'])
+            || c.chars().any(char::is_control)
+            || c.ends_with(['.', ' '])
+            || is_reserved_name(&c)
+            || is_short_name(&c)
+        {
             return Err(PathProblem::BadCharacters);
         }
     }
@@ -184,6 +235,9 @@ pub fn check_install_dir(p: &Path, sys: &SystemDirs, data: &[PathBuf]) -> Result
     }
     if data.iter().any(|d| is_within(p, d) || is_within(d, p)) {
         return Err(PathProblem::DataFolder);
+    }
+    if sys.roots.iter().any(|r| norm(p) == norm(r)) {
+        return Err(PathProblem::SharedRoot);
     }
     Ok(())
 }
@@ -202,7 +256,7 @@ pub fn suite_parent(dir: &Path) -> Option<&Path> {
 }
 
 /// Is `file_name` (directly in `%TEMP%`) something GloriaSetup left there for app `id`: a run log
-/// (`GloriaSetup-<id>-YYYYMMDD-HHMMSS.log`), an uninstall trampoline copy (`GloriaSetup-<id>-<8 hex>.exe`) or the
+/// (`GloriaSetup-<id>-YYYYMMDD-HHMMSS[-n].log`), an uninstall trampoline copy (`GloriaSetup-<id>-<8 hex>.exe`) or the
 /// migration data backup (`GloriaSetup-backup-<id>`)? Strict, so app `foo` never matches app `foo-bar`'s files.
 pub fn is_temp_leftover(file_name: &str, id: &str) -> bool {
     let f = file_name.to_ascii_lowercase();
@@ -213,7 +267,11 @@ pub fn is_temp_leftover(file_name: &str, id: &str) -> bool {
     let Some(rest) = f.strip_prefix(&format!("gloriasetup-{id}-")) else { return false };
     let digits = |s: &str, n: usize| s.len() == n && s.bytes().all(|b| b.is_ascii_digit());
     if let Some(stamp) = rest.strip_suffix(".log") {
-        return matches!(stamp.split_once('-'), Some((d, t)) if digits(d, 8) && digits(t, 6));
+        // `YYYYMMDD-HHMMSS`, or `YYYYMMDD-HHMMSS-<n>` when another run took that second's name.
+        let mut parts = stamp.split('-');
+        let (d, t, n, extra) = (parts.next(), parts.next(), parts.next(), parts.next());
+        let n_ok = n.map_or(true, |n| (1..=2).contains(&n.len()) && n.bytes().all(|b| b.is_ascii_digit()));
+        return matches!((d, t), (Some(d), Some(t)) if digits(d, 8) && digits(t, 6)) && n_ok && extra.is_none();
     }
     if let Some(hex) = rest.strip_suffix(".exe") {
         return hex.len() == 8 && hex.bytes().all(|b| b.is_ascii_hexdigit());
@@ -278,6 +336,15 @@ mod tests {
             r"%USERPROFILE%\AppData\Roaming",
             r"%USERPROFILE%\Desktop",
             r"%APPDATA%\%OTHER%",
+            r"%APPDATA%\Microsoft\Windows\Foo",
+            r"%LOCALAPPDATA%\Packages\Foo",
+            r"%LOCALAPPDATA%\Microsoft\Edge",
+            r"%APPDATA%\CON",
+            r"%APPDATA%\Foo\nul.txt",
+            r"%APPDATA%\com1",
+            r"%APPDATA%\FOOBAR~1",
+            r"%APPDATA%\Foo.",
+            r"%USERPROFILE%\.config\foo",
         ] {
             assert!(parse_data_folder(s).is_err(), "{s:?} should be rejected");
         }
@@ -302,6 +369,9 @@ mod tests {
                     "WINDIR" | "SystemRoot" => r"C:\Windows",
                     "ProgramData" => r"C:\ProgramData",
                     "TEMP" | "TMP" => r"C:\Users\you\AppData\Local\Temp",
+                    "USERPROFILE" => r"C:\Users\you",
+                    "APPDATA" => r"C:\Users\you\AppData\Roaming",
+                    "LOCALAPPDATA" => r"C:\Users\you\AppData\Local",
                     _ => return None,
                 }
                 .to_string(),
@@ -329,6 +399,37 @@ mod tests {
         assert_eq!(ok(r"C:\Users\you\AppData\Roaming"), Err(PathProblem::DataFolder));
         // "Program Files Extra" is not inside "Program Files".
         assert_eq!(ok(r"C:\Program Files Extra\Foo"), Ok(()));
+        // Windows strips trailing dots/spaces and resolves 8.3 names, so both could alias a blocked folder.
+        assert_eq!(ok(r"C:\Program Files.\Foo"), Err(PathProblem::BadCharacters));
+        assert_eq!(ok(r"C:\Program Files \Foo"), Err(PathProblem::BadCharacters));
+        assert_eq!(ok(r"C:\PROGRA~1\Foo"), Err(PathProblem::BadCharacters));
+        assert_eq!(ok(r"D:\Apps\CON"), Err(PathProblem::BadCharacters));
+        assert_eq!(ok(r"D:\Apps\lpt1.log\x"), Err(PathProblem::BadCharacters));
+        // Shared roots are parents only.
+        for r in [
+            r"C:\Users",
+            r"C:\Users\you",
+            r"C:\Users\you\Desktop",
+            r"C:\Users\you\Documents\",
+            r"C:\Users\you\AppData\Local",
+            r"C:\Users\you\AppData\Local\Programs",
+            r"C:\Users\you\AppData\Local\Programs\Project Gloria Softwares",
+        ] {
+            assert_eq!(check_install_dir(Path::new(r), &s, &[]), Err(PathProblem::SharedRoot), "{r}");
+        }
+        assert_eq!(ok(r"C:\Users\you\Desktop\Foo"), Ok(()));
+    }
+
+    #[test]
+    fn reserved_and_short_names() {
+        for n in ["CON", "con", "Nul.txt", "COM1", "lpt9", "AUX ", "com\u{b9}", "CONIN$"] {
+            assert!(is_reserved_name(n), "{n}");
+        }
+        for n in ["CONSOLE", "COM10", "nullx", "Comet", "lpt", "auxiliary.txt"] {
+            assert!(!is_reserved_name(n), "{n}");
+        }
+        assert!(is_short_name("PROGRA~1") && is_short_name("a~9b"));
+        assert!(!is_short_name("~tmp") && !is_short_name("x~") && !is_short_name("Foo"));
     }
 
     #[test]
@@ -346,7 +447,12 @@ mod tests {
 
     #[test]
     fn temp_leftovers() {
-        for ok in ["GloriaSetup-Foo-20261123-101500.log", "gloriasetup-foo-0a1b2c3d.exe", "GloriaSetup-backup-Foo"] {
+        for ok in [
+            "GloriaSetup-Foo-20261123-101500.log",
+            "GloriaSetup-Foo-20261123-101500-2.log",
+            "gloriasetup-foo-0a1b2c3d.exe",
+            "GloriaSetup-backup-Foo",
+        ] {
             assert!(is_temp_leftover(ok, "Foo"), "{ok}");
         }
         for no in [
@@ -357,6 +463,8 @@ mod tests {
             "GloriaSetup-FooBar-20261123-101500.log",
             "GloriaSetup-backup-Foo-old",
             "GloriaSetup-Foo-20261123-101500.txt",
+            "GloriaSetup-Foo-20261123-101500-x.log",
+            "GloriaSetup-Foo-20261123-101500-2-3.log",
             "other.log",
         ] {
             assert!(!is_temp_leftover(no, "Foo"), "{no}");

@@ -39,6 +39,21 @@ export interface PackOptions {
   stdio?: StdioOptions;
 }
 
+export interface CheckOptions {
+  /** Path to `gloria.toml` (defaults like `pack`). */
+  manifest?: string;
+  /** Overrides `version` in `gloria.toml` (leading `v` is stripped). */
+  version?: string;
+  /** Overrides `icon` in `gloria.toml`. */
+  icon?: string;
+  /** Also check that this folder holds `main_exe`. */
+  appDir?: string;
+  /** Working directory for `gloria-pack`. */
+  cwd?: string;
+  /** Child process stdio configuration (default: `"pipe"`). */
+  stdio?: StdioOptions;
+}
+
 export interface PackResult {
   status: number;
   stdout: string;
@@ -47,14 +62,19 @@ export interface PackResult {
 }
 
 export declare function buildArgs(options: PackOptions): string[];
+export declare function buildCheckArgs(options?: CheckOptions): string[];
 export declare function pack(options: PackOptions): PackResult;
+/** Validates `gloria.toml`, the icon and (optionally) the app folder without building; throws on problems. */
+export declare function check(options?: CheckOptions): PackResult;
 export declare function inspect(exePath: string): string;
 
 declare const gloriaSetup: {
   packPath: string;
   stubPath: string;
   buildArgs: typeof buildArgs;
+  buildCheckArgs: typeof buildCheckArgs;
   pack: typeof pack;
+  check: typeof check;
   inspect: typeof inspect;
 };
 

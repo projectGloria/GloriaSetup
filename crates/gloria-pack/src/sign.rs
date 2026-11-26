@@ -24,6 +24,9 @@ impl Sign {
         let mut c = Command::new(&self.signtool);
         c.args(["sign", "/fd", "SHA256", "/d", description, "/f"]).arg(&self.pfx);
         if let Some(p) = &self.password {
+            // signtool takes a PFX password only as `/p`. It is on signtool's command line (readable by this user's
+            // own processes) for the seconds it runs, never in our arguments, logs or errors. Importing the key into
+            // a certificate store instead would leave it on the machine, which is worse.
             c.args(["/p", p]);
         }
         if let Some(t) = &self.timestamp_url {

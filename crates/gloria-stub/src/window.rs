@@ -1,33 +1,29 @@
 //! The real window: a borderless 640×440 popup with a Direct2D target, hit-testing over the regions `ui::draw`
-//! returns, keyboard focus, a 16 ms animation timer, and one native EDIT control for the folder field.
+//! returns, keyboard focus, and a 16 ms animation timer.
 
 use std::time::Instant;
 
-use windows::core::{w, Interface, Result, HSTRING, PCWSTR};
+use windows::core::{w, Interface, Result, HSTRING};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
 use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::Shell::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::app::{Act, App, Effect, Page};
-use crate::gfx::{hex, Gfx, Image, Painter, Res, MONO_TTF};
-use crate::ui::{self, Frame, Input, CLOSE_BTN, H, MIN_BTN, W};
+use crate::gfx::{Gfx, Image, Painter, Res};
+use crate::ui::{self, Frame, Input, H, MIN_BTN, W};
 
 /// Handles effects the window cannot do itself (engine jobs, launching, closing the app). Returns an exit code to
 /// close the window with.
 pub type Handler = Box<dyn FnMut(&mut App, Effect, HWND) -> Option<i32>>;
 
 const TIMER: usize = 1;
-const EM_SETSEL: u32 = 0x00b1;
-const EM_SETMARGINS: u32 = 0x00d3;
 const WM_MOUSELEAVE: u32 = 0x02a3;
 /// Posted by engine threads to wake the window.
 pub const WM_JOB: u32 = WM_APP + 1;
@@ -44,16 +40,14 @@ struct State {
     frame: Frame,
     t0: Instant,
     scale: f32,
-    edit: HWND,
-    edit_font: HFONT,
-    edit_brush: HBRUSH,
-    edit_visible: bool,
     tracking: bool,
     timer: bool,
     /// Footer link hover animation: from `.0` to `.1`, started at `.2`.
     link: (f32, f32, f64),
     exit: Option<i32>,
     icons: (HICON, HICON),
+    /// The last render error logged, so a failing target is logged once, not every frame.
+    last_render_err: Option<i32>,
 }
 
 impl State {
@@ -124,15 +118,12 @@ pub fn run(g: Gfx, mut app: App, software: bool, handler: Handler) -> Result<i32
             frame: Frame::default(),
             t0: Instant::now(),
             scale,
-            edit: HWND::default(),
-            edit_font: HFONT::default(),
-            edit_brush: CreateSolidBrush(colorref(0x0d0d0f)),
-            edit_visible: false,
             tracking: false,
             timer: false,
             link: (0.0, 0.0, 0.0),
             exit: None,
             icons: (HICON::default(), HICON::default()),
+            last_render_err: None,
         });
         let ptr = Box::into_raw(state);
         let hwnd = CreateWindowExW(
@@ -163,39 +154,19 @@ pub fn run(g: Gfx, mut app: App, software: bool, handler: Handler) -> Result<i32
             let _ = SetWindowPos(hwnd, None, 0, 0, pw, ph, SWP_NOMOVE | SWP_NOZORDER);
         }
         set_icons(st);
-        create_edit(st);
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         start_timer(st);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).into() {
-            // Route Tab / Enter / Escape from the edit control to the window's keyboard handling.
-            if msg.message == WM_KEYDOWN && msg.hwnd == st.edit && msg.hwnd != HWND::default() {
-                let vk = VIRTUAL_KEY(msg.wParam.0 as u16);
-                if vk == VK_TAB || vk == VK_RETURN || vk == VK_ESCAPE {
-                    key(st, vk);
-                    continue;
-                }
-            }
-            if msg.message == WM_CHAR && msg.hwnd == st.edit && matches!(msg.wParam.0 as u32, 9 | 13 | 27) {
-                continue;
-            }
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
         let code = st.exit.unwrap_or(1);
-        let st = Box::from_raw(ptr);
-        let _ = DeleteObject(st.edit_brush.into());
-        if !st.edit_font.is_invalid() {
-            let _ = DeleteObject(st.edit_font.into());
-        }
+        let _st = Box::from_raw(ptr);
         Ok(code)
     }
-}
-
-fn colorref(rgb: u32) -> COLORREF {
-    COLORREF(((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff))
 }
 
 unsafe fn state<'a>(hwnd: HWND) -> Option<&'a mut State> {
@@ -235,7 +206,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 st.rt = None;
                 st.res = Res::default();
                 set_icons(st);
-                edit_font(st);
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
@@ -250,7 +220,7 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
             }
             WM_SETCURSOR => {
                 if (lp.0 & 0xffff) as u32 == HTCLIENT {
-                    let hand = st.inp.hover.is_some_and(|a| !matches!(a, Act::Field));
+                    let hand = st.inp.hover.is_some();
                     let _ = SetCursor(LoadCursorW(None, if hand { IDC_HAND } else { IDC_ARROW }).ok());
                     return LRESULT(1);
                 }
@@ -289,13 +259,8 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 let (x, y) = pos(st, lp);
                 st.inp.pressed = hit(&st.frame, x, y);
                 st.inp.focus = None;
-                if st.inp.pressed == Some(Act::Field) {
-                    let _ = SetFocus(Some(st.edit));
-                    st.inp.pressed = None;
-                } else {
-                    let _ = SetFocus(Some(hwnd));
-                    SetCapture(hwnd);
-                }
+                let _ = SetFocus(Some(hwnd));
+                SetCapture(hwnd);
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 LRESULT(0)
             }
@@ -331,7 +296,6 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                     }
                     moving = true;
                 }
-                sync_edit(st);
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 if !moving {
                     let _ = KillTimer(Some(hwnd), TIMER);
@@ -343,41 +307,17 @@ extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRES
                 start_timer(st);
                 LRESULT(0)
             }
-            WM_COMMAND => {
-                let code = ((wp.0 >> 16) & 0xffff) as u32;
-                if HWND(lp.0 as _) == st.edit {
-                    match code {
-                        EN_CHANGE => {
-                            let n = GetWindowTextLengthW(st.edit);
-                            let mut buf = vec![0u16; n as usize + 1];
-                            let got = GetWindowTextW(st.edit, &mut buf);
-                            let s = String::from_utf16_lossy(&buf[..got as usize]);
-                            if s != st.app.folder {
-                                st.app.set_folder(s);
-                            }
-                        }
-                        EN_SETFOCUS => {
-                            st.inp.field_focus = true;
-                            st.inp.focus = None;
-                        }
-                        EN_KILLFOCUS => st.inp.field_focus = false,
-                        _ => {}
-                    }
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
-                LRESULT(0)
-            }
-            WM_CTLCOLOREDIT => {
-                let dc = HDC(wp.0 as _);
-                SetTextColor(dc, colorref(0xf2f1ee));
-                SetBkColor(dc, colorref(0x0d0d0f));
-                LRESULT(st.edit_brush.0 as isize)
-            }
             WM_CLOSE => {
                 act(st, Act::Close);
                 LRESULT(0)
             }
             WM_DESTROY => {
+                for i in [st.icons.0, st.icons.1] {
+                    if !i.is_invalid() {
+                        let _ = DestroyIcon(i);
+                    }
+                }
+                st.icons = (HICON::default(), HICON::default());
                 PostQuitMessage(0);
                 LRESULT(0)
             }
@@ -421,7 +361,6 @@ fn act(st: &mut State, a: Act) {
         Effect::Minimize => unsafe {
             let _ = ShowWindow(st.hwnd, SW_MINIMIZE);
         },
-        Effect::Browse => browse(st),
         Effect::OpenUrl(url) => crate::sys::open_url(url),
         other => {
             if let Some(code) = (st.handler)(&mut st.app, other, st.hwnd) {
@@ -439,7 +378,6 @@ fn act(st: &mut State, a: Act) {
         st.link = (0.0, 0.0, 0.0);
     }
     start_timer(st);
-    sync_edit(st);
     unsafe {
         let _ = InvalidateRect(Some(st.hwnd), None, false);
     }
@@ -460,7 +398,7 @@ fn key(st: &mut State, vk: VIRTUAL_KEY) {
             order.dedup();
             order.push(Act::Minimize);
             order.push(Act::Close);
-            let cur = if st.inp.field_focus { Some(Act::Field) } else { st.inp.focus };
+            let cur = st.inp.focus;
             let i = cur.and_then(|c| order.iter().position(|a| *a == c));
             let n = order.len() as isize;
             let next = match i {
@@ -475,14 +413,8 @@ fn key(st: &mut State, vk: VIRTUAL_KEY) {
             };
             let a = order[next as usize];
             unsafe {
-                if a == Act::Field {
-                    st.inp.focus = None;
-                    let _ = SetFocus(Some(st.edit));
-                    SendMessageW(st.edit, EM_SETSEL, Some(WPARAM(0)), Some(LPARAM(-1)));
-                } else {
-                    st.inp.focus = Some(a);
-                    let _ = SetFocus(Some(st.hwnd));
-                }
+                st.inp.focus = Some(a);
+                let _ = SetFocus(Some(st.hwnd));
             }
         }
         VK_RETURN | VK_SPACE => {
@@ -539,7 +471,6 @@ fn render(st: &mut State) {
         let dc: ID2D1DeviceContext = rt.cast()?;
         rt.BeginDraw();
         let mut inp = st.inp;
-        inp.field_text = !st.edit_visible;
         inp.link = st.link_k(now);
         {
             let mut p = Painter::new(&st.g, dc, &mut st.res, st.scale)?;
@@ -556,133 +487,13 @@ fn render(st: &mut State) {
         }
         Ok(())
     })();
-    let _ = r;
-    sync_edit(st);
-}
-
-// ───────────── native folder field ─────────────
-
-fn create_edit(st: &mut State) {
-    unsafe {
-        // Make the embedded JetBrains Mono available to GDI for this process only.
-        let mut n = 0u32;
-        let _ = AddFontMemResourceEx(MONO_TTF.as_ptr() as _, MONO_TTF.len() as u32, None, &mut n);
-        let hinst = GetModuleHandleW(None).unwrap_or_default();
-        st.edit = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            w!("EDIT"),
-            &HSTRING::from(st.app.folder.as_str()),
-            WS_CHILD | WINDOW_STYLE(ES_AUTOHSCROLL as u32),
-            0,
-            0,
-            10,
-            10,
-            Some(st.hwnd),
-            None,
-            Some(hinst.into()),
-            None,
-        )
-        .unwrap_or_default();
-        edit_font(st);
-    }
-}
-
-fn edit_font(st: &mut State) {
-    unsafe {
-        if !st.edit_font.is_invalid() {
-            let _ = DeleteObject(st.edit_font.into());
-        }
-        st.edit_font = CreateFontW(
-            -(11.5 * st.scale).round() as i32,
-            0,
-            0,
-            0,
-            FW_NORMAL.0 as i32,
-            0,
-            0,
-            0,
-            DEFAULT_CHARSET,
-            OUT_TT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            FF_MODERN.0 as u32,
-            w!("JetBrains Mono"),
-        );
-        SendMessageW(st.edit, WM_SETFONT, Some(WPARAM(st.edit_font.0 as usize)), Some(LPARAM(1)));
-        // No inner margins: the field's 12 px padding is applied by positioning.
-        SendMessageW(st.edit, EM_SETMARGINS, Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)), Some(LPARAM(0)));
-    }
-    st.edit_visible = false;
-    sync_edit(st);
-}
-
-/// Shows the edit over the field once the Options page has finished animating in, hides it otherwise.
-fn sync_edit(st: &mut State) {
-    if st.edit.is_invalid() {
-        return;
-    }
-    let now = st.now();
-    let want = st.app.page == Page::Options && st.app.modal.is_none() && now - st.app.page_t0 >= 0.18 && st.frame.field.is_some();
-    unsafe {
-        if want {
-            let f = st.frame.field.unwrap();
-            let s = st.scale;
-            let lh = (11.5 * 1.32 * s).round();
-            let x = ((f.x + 12.0) * s).round() as i32;
-            let w = ((f.w - 24.0) * s).round() as i32;
-            let y = ((f.y + 1.0) * s + ((f.h - 2.0) * s - lh) / 2.0).round() as i32;
-            let _ = SetWindowPos(st.edit, None, x, y, w, lh as i32, SWP_NOZORDER | SWP_NOACTIVATE);
-            if !st.edit_visible {
-                let cur = {
-                    let n = GetWindowTextLengthW(st.edit);
-                    let mut buf = vec![0u16; n as usize + 1];
-                    let got = GetWindowTextW(st.edit, &mut buf);
-                    String::from_utf16_lossy(&buf[..got as usize])
-                };
-                if cur != st.app.folder {
-                    let _ = SetWindowTextW(st.edit, &HSTRING::from(st.app.folder.as_str()));
-                }
-                let _ = ShowWindow(st.edit, SW_SHOWNA);
-                st.edit_visible = true;
-                let _ = InvalidateRect(Some(st.hwnd), None, false);
-            }
-        } else if st.edit_visible {
-            if GetFocus() == st.edit {
-                let _ = SetFocus(Some(st.hwnd));
-            }
-            let _ = ShowWindow(st.edit, SW_HIDE);
-            st.edit_visible = false;
-            let _ = InvalidateRect(Some(st.hwnd), None, false);
+    if let Err(e) = r {
+        // Once per error code, so a broken target doesn't fill the log at 60 frames a second.
+        if st.last_render_err != Some(e.code().0) {
+            st.last_render_err = Some(e.code().0);
+            crate::log!("render: {e}");
         }
     }
-}
-
-fn browse(st: &mut State) {
-    let r: Result<()> = (|| unsafe {
-        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        dlg.SetOptions(dlg.GetOptions()? | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST)?;
-        dlg.SetTitle(&HSTRING::from(st.app.s.t("browse.title")))?;
-        let mut start = std::path::PathBuf::from(&st.app.folder);
-        while !start.exists() {
-            if !start.pop() {
-                break;
-            }
-        }
-        if start.exists() {
-            if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(&HSTRING::from(start.as_os_str()), None) {
-                let _ = dlg.SetFolder(&item);
-            }
-        }
-        dlg.Show(Some(st.hwnd))?;
-        let item = dlg.GetResult()?;
-        let p = item.GetDisplayName(SIGDN_FILESYSPATH)?;
-        let s = p.to_string().unwrap_or_default();
-        windows::Win32::System::Com::CoTaskMemFree(Some(p.0 as _));
-        st.app.set_folder(s.clone());
-        let _ = SetWindowTextW(st.edit, &HSTRING::from(s));
-        Ok(())
-    })();
-    let _ = r;
 }
 
 // ───────────── window icon ─────────────
@@ -726,8 +537,9 @@ pub fn hicon(img: &Image) -> Result<HICON> {
         };
         let mut bits = std::ptr::null_mut();
         let dc = GetDC(None);
-        let color = CreateDIBSection(Some(dc), &bi as *const _ as *const BITMAPINFO, DIB_RGB_COLORS, &mut bits, None, 0)?;
+        let color = CreateDIBSection(Some(dc), &bi as *const _ as *const BITMAPINFO, DIB_RGB_COLORS, &mut bits, None, 0);
         ReleaseDC(None, dc);
+        let color = color?;
         std::ptr::copy_nonoverlapping(img.px.as_ptr(), bits as *mut u8, img.px.len());
         let mask = CreateBitmap(img.w as i32, img.h as i32, 1, 1, None);
         let ii = ICONINFO { fIcon: TRUE, xHotspot: 0, yHotspot: 0, hbmMask: mask, hbmColor: color };
@@ -736,9 +548,4 @@ pub fn hicon(img: &Image) -> Result<HICON> {
         let _ = DeleteObject(mask.into());
         icon
     }
-}
-
-#[allow(dead_code)]
-fn unused() {
-    let _ = (hex(0), CLOSE_BTN, PCWSTR::null());
 }

@@ -28,6 +28,8 @@ pub struct Args {
     /// Internal: uninstall trampoline.
     pub cleanup: Option<PathBuf>,
     pub wait_pid: Option<u32>,
+    /// Internal: the silent `uninstall.exe` (`--wait-pid`) is waiting for this trampoline's exit code.
+    pub report: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +94,7 @@ pub fn parse_args_str(rest: &str) -> Result<Args, CliError> {
     let mut head = rest;
     let mut install_dir = None;
     for (tok, off) in tokens(rest) {
-        if tok.len() >= 3 && tok[..3].eq_ignore_ascii_case("/D=") {
+        if tok.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("/D=")) {
             let raw = rest[off..].trim();
             let raw = &raw[raw.find('=').map(|i| i + 1).unwrap_or(raw.len())..];
             let raw = raw.trim().trim_matches('"').trim();
@@ -131,6 +133,7 @@ pub fn parse_args_str(rest: &str) -> Result<Args, CliError> {
             "--icon" => a.icon = Some(value("--icon")?.into()),
             "--screenshot" => a.screenshot = Some(value("--screenshot")?.into()),
             "--cleanup" => a.cleanup = Some(value("--cleanup")?.into()),
+            "--report" => a.report = true,
             "--wait-pid" => {
                 let v = value("--wait-pid")?;
                 a.wait_pid = Some(v.parse().map_err(|_| CliError(format!("bad pid {v:?}")))?);
@@ -205,7 +208,9 @@ mod tests {
         let a = p(r#"t.exe --cleanup "C:\Users\you\AppData\Local\Programs\Foo" --wait-pid 1234 /S /PURGE"#);
         assert_eq!(a.cleanup, Some(PathBuf::from(r"C:\Users\you\AppData\Local\Programs\Foo")));
         assert_eq!(a.wait_pid, Some(1234));
-        assert!(a.silent && a.purge && !a.wipe);
+        assert!(a.silent && a.purge && !a.wipe && !a.report);
+        let a = p(r#"t.exe /S --cleanup "C:\Apps\Foo" --wait-pid 7 --report"#);
+        assert!(a.report && a.wait_pid == Some(7));
         let a = p(r#"t.exe --cleanup "C:\Apps\Foo" /S /wipe"#);
         assert!(a.wipe && a.purge, "/WIPE implies /PURGE");
     }
@@ -217,5 +222,10 @@ mod tests {
         assert!(parse_command_line("x.exe /D=").is_err());
         assert!(parse_command_line("x.exe --wait-pid abc").is_err());
         assert!(parse_command_line("x.exe --page done").is_err());
+        // Multibyte tokens must be rejected, not panic on a byte slice.
+        assert!(parse_command_line("x.exe /Dé").is_err());
+        assert!(parse_command_line("x.exe é").is_err());
+        let a = p(r"x.exe /D=C:\Uygulamalar\Çalışma");
+        assert_eq!(a.install_dir, Some(PathBuf::from(r"C:\Uygulamalar\Çalışma")));
     }
 }

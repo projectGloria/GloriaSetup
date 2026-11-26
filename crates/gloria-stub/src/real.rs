@@ -64,7 +64,7 @@ fn run_plan(src: &Source, plan: &Plan, job: Option<&Shared>) -> Result<(), Fail>
         }
     }
     if let Some((dir, purge)) = &plan.remove_first {
-        let u = Uninstall { app: &src.m.app, dir: dir.clone(), purge: *purge, wipe: false, dry_run: plan.req.dry_run, wait_pid: None };
+        let u = Uninstall { app: &src.m.app, dir: dir.clone(), purge: *purge, wipe: false, dry_run: plan.req.dry_run, wait_pid: None, parent_waits: false };
         match job {
             Some(j) => engine::uninstall(&u, &mut reporter(j, 0.0, 7.0))?,
             None => engine::uninstall(&u, &mut quiet)?,
@@ -188,10 +188,21 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             }
         }
         None => {
+            let mut refused = false;
             if let Some(d) = &args.install_dir {
-                a.set_folder(d.to_string_lossy().into_owned());
+                // Same rule as silent mode: a refused `/D=` folder is never installed into.
+                match engine::resolve_dir(&app_m, d) {
+                    Ok(_) if is_legacy_dir(&legacy, d) => a.set_folder(d.to_string_lossy().into_owned()),
+                    Ok(r) => a.set_folder(r.to_string_lossy().into_owned()),
+                    Err(p) => {
+                        log!("install folder {} refused: {p:?}", d.display());
+                        a.error = Some(ErrorInfo { code: Exit::InvalidArgs.code(), reason: "err.reasonArgs".into(), log: log::display_path() });
+                        refused = true;
+                    }
+                }
             }
             match legacy.first() {
+                _ if refused => Page::Error,
                 Some(f) => {
                     a.legacy = Some(Legacy {
                         kind: f.kind.label().into(),
@@ -244,8 +255,8 @@ fn setup_ui(args: &Args, src: Source, ex: Option<Existing>, legacy: Vec<Found>) 
             None
         }
         Effect::Finish | Effect::LaunchAndExit => {
-            // The done screen's "Add to Start menu" (the install already made the shortcut if it was on).
-            engine::set_start_menu(&app_m, &app.check.final_dir, app.start_menu, dry_run);
+            // The done screen's shortcut checkboxes (the install already made them if they were on).
+            engine::set_shortcuts(&app_m, &app.check.final_dir, app.start_menu, app.desktop, dry_run);
             if eff == Effect::LaunchAndExit && !dry_run {
                 sys::launch(&app.check.final_dir.join(app_m.main_exe_rel()));
             }
@@ -308,8 +319,31 @@ pub fn uninstaller(args: &Args, src: Source) -> i32 {
         }
     }
     if args.silent {
-        return match engine::start_trampoline(&app, &dir, &trampoline_flags(args, args.purge, args.wipe, None)) {
-            Ok(_) => Exit::Ok.code(),
+        // Wait for the trampoline's result so `uninstall.exe /S` exits with the real code (like any uninstaller a
+        // launcher waits on). Without the events, fall back to handing off and returning at once.
+        // An interrupted update in the folder is rolled back first, and that restores files (this exe among them)
+        // that stay locked while we wait: then hand off and return at once, as before.
+        let interrupted = dir.join(gloria_core::manifest::WORK_DIR).exists();
+        if interrupted {
+            log!("{} holds an interrupted update; not waiting for the trampoline", dir.display());
+        }
+        let events = if interrupted { None } else { sys::ResultEvents::create(&app.id) };
+        let mut flags = trampoline_flags(args, args.purge, args.wipe, None);
+        if events.is_some() {
+            flags += " --report";
+        }
+        return match engine::start_trampoline(&app, &dir, &flags) {
+            Ok(pid) => match events.and_then(|ev| ev.wait(pid, std::time::Duration::from_secs(600))) {
+                Some(code) => {
+                    log!("trampoline {pid} reported exit code {code}");
+                    code
+                }
+                None if flags.ends_with("--report") => {
+                    log!("trampoline {pid} did not report back in time");
+                    Exit::Error.code()
+                }
+                None => Exit::Ok.code(),
+            },
             Err(e) => {
                 log!("trampoline: {e}");
                 Exit::Error.code()
@@ -358,12 +392,27 @@ pub fn uninstaller(args: &Args, src: Source) -> i32 {
 
 pub fn cleanup(args: &Args, src: Source, dir: &Path) -> i32 {
     let app = src.m.app.clone();
-    let u = Uninstall { app: &app, dir: dir.to_path_buf(), purge: args.purge, wipe: args.wipe, dry_run: args.dry_run, wait_pid: args.wait_pid };
+    // `--report`: the silent `uninstall.exe` is waiting for our exit code, so tell it before deleting its exe.
+    let report_to = args.wait_pid.filter(|_| args.report && args.silent);
+    let u = Uninstall {
+        app: &app,
+        dir: dir.to_path_buf(),
+        purge: args.purge,
+        wipe: args.wipe,
+        dry_run: args.dry_run,
+        wait_pid: args.wait_pid,
+        parent_waits: report_to.is_some(),
+    };
     let code = if args.silent {
-        match engine::uninstall(&u, &mut |_, _| true) {
-            Ok(()) => 0,
-            Err(f) => f.exit.code(),
+        let (code, retry) = match engine::uninstall_keep(&u, &mut |_, _| true) {
+            Ok(retry) => (0, retry),
+            Err(f) => (f.exit.code(), Vec::new()),
+        };
+        if let Some(pid) = report_to {
+            sys::report_result(&app.id, pid, code);
+            engine::remove_leftovers(&u, &retry);
         }
+        code
     } else {
         let r = (|| -> windows::core::Result<i32> {
             let lang = i18n::detect(args.lang.as_deref());
@@ -378,7 +427,7 @@ pub fn cleanup(args: &Args, src: Source, dir: &Path) -> i32 {
             let job = a.job.clone().expect("job");
             let (dir, purge, wipe, dry_run, wait_pid, app2) = (dir.to_path_buf(), args.purge, args.wipe, args.dry_run, args.wait_pid, app.clone());
             std::thread::spawn(move || {
-                let u = Uninstall { app: &app2, dir, purge, wipe, dry_run, wait_pid };
+                let u = Uninstall { app: &app2, dir, purge, wipe, dry_run, wait_pid, parent_waits: false };
                 let r = engine::uninstall(&u, &mut reporter(&job, 0.0, 100.0));
                 let mut st = job.lock().unwrap();
                 st.result = Some(r.map_err(|f| info_of(&f)));

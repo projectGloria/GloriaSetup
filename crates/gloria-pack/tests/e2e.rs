@@ -142,7 +142,7 @@ impl TestApp {
 
     fn uninstall(&self, args: &[&str]) -> i32 {
         let code = run(&self.install.join("uninstall.exe"), args);
-        // The uninstaller hands off to a %TEMP% copy and returns at once; wait for the copy to finish.
+        // The uninstaller hands off to a %TEMP% copy (and, with /S, waits for its result); wait for the copy to finish.
         let t = Instant::now();
         while self.install.join("install-manifest.json").exists() || self.has_key() {
             assert!(t.elapsed() < Duration::from_secs(60), "uninstall did not finish");
@@ -194,6 +194,11 @@ impl Drop for Running {
 impl Drop for TestApp {
     fn drop(&mut self) {
         let _ = Command::new("reg").args(["delete", &self.key(), "/f"]).output();
+        if let Ok(m) = InstallManifest::load(&self.install) {
+            for s in m.shortcuts {
+                let _ = std::fs::remove_file(s);
+            }
+        }
         let _ = std::fs::remove_file(self.lnk());
         let _ = std::fs::remove_dir_all(&self.data);
         let _ = std::fs::remove_dir_all(&self.work);
@@ -371,6 +376,11 @@ fn install_update_reinstall_downgrade_uninstall() {
     let kb = (m.total_size() + 1023) / 1024;
     assert_eq!(t.reg("EstimatedSize"), Some(kb.to_string()));
     assert!(t.lnk().exists(), "Start Menu shortcut");
+    assert!(m.options.desktop_shortcut, "desktop shortcut default");
+    assert_eq!(m.shortcuts.len(), 2, "Start Menu + desktop shortcuts");
+    for s in &m.shortcuts {
+        assert!(Path::new(s).exists(), "shortcut missing: {s}");
+    }
     assert_eq!(m.app_id, t.id);
     assert_eq!(m.files.len(), 5);
 
@@ -401,11 +411,23 @@ fn install_update_reinstall_downgrade_uninstall() {
     assert!(t.install.join("old-notes.txt").exists());
     assert!(t.data.exists(), "a downgrade without /PURGE keeps data");
 
-    // Silent uninstall keeps data and unrelated files, removes exactly what it installed.
-    assert_eq!(t.uninstall(&["/S"]), 0);
+    // Silent uninstall keeps data and unrelated files, removes exactly what it installed. It waits for its
+    // trampoline's result, so the app is already gone when it returns (only its own exe may still be pending).
+    assert_eq!(run(&t.install.join("uninstall.exe"), &["/S"]), 0);
+    assert!(!t.has_key(), "uninstall.exe /S returned before the uninstall finished");
+    assert!(!t.install.join("install-manifest.json").exists());
+    let t0 = Instant::now();
+    while t.install.join("uninstall.exe").exists() {
+        assert!(t0.elapsed() < Duration::from_secs(60), "the trampoline never deleted uninstall.exe");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(files(&t.install), ["user-notes.txt"]);
     assert!(!t.has_key());
     assert!(!t.lnk().exists());
+    for s in &m.shortcuts {
+        assert!(!Path::new(s).exists(), "shortcut left behind: {s}");
+    }
     assert!(t.data.join(r"sub\settings.json").exists(), "uninstall without /PURGE keeps data");
 
     // Reinstall into that folder, which is now someone else's non-empty folder: setup appends \<Name>. Uninstalling

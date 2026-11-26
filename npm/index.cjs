@@ -94,6 +94,47 @@ function pack(options) {
 }
 
 /**
+ * Build CLI arguments for `gloria-pack --check` from an options object.
+ * @param {import("./index.d.ts").CheckOptions} [options]
+ * @returns {string[]}
+ */
+function buildCheckArgs(options = {}) {
+  if (!options || typeof options !== "object") {
+    throw new TypeError("gloria-setup: check(options) takes an options object.");
+  }
+  const args = ["--check"];
+  if (options.manifest) args.push("--manifest", options.manifest);
+  if (options.version) args.push("--version", String(options.version));
+  if (options.icon) args.push("--icon", options.icon);
+  if (options.appDir) args.push("--app", options.appDir);
+  return args;
+}
+
+/**
+ * Validate gloria.toml (every field), the icon, and the app folder if given, without building anything.
+ * Throws with gloria-pack's message when something is wrong.
+ * @param {import("./index.d.ts").CheckOptions} [options]
+ * @returns {import("./index.d.ts").PackResult}
+ */
+function check(options = {}) {
+  ensureBinary(packPath, "gloria-pack.exe");
+  const args = buildCheckArgs(options);
+  const result = spawnSync(packPath, args, {
+    cwd: options.cwd,
+    encoding: "utf8",
+    stdio: options.stdio || "pipe",
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || "").trim();
+    throw new Error(`gloria-pack --check exited with code ${result.status}${detail ? `: ${detail}` : ""}`);
+  }
+  return { status: result.status, stdout: result.stdout || "", stderr: result.stderr || "", args };
+}
+
+/**
  * Inspect icons, version info, and payload metadata of a built setup or stub exe.
  * @param {string} exePath
  * @returns {string}
@@ -125,6 +166,8 @@ module.exports = {
   packPath,
   stubPath,
   buildArgs,
+  buildCheckArgs,
   pack,
+  check,
   inspect,
 };

@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
             "--icon" => icon = Some(PathBuf::from(val()?)),
             "--allow-default-icon" => allow_default_icon = true,
             "--out" => out = PathBuf::from(val()?),
-            "--level" => level = val()?.parse().map_err(|_| "--level must be a number".to_string())?,
+            "--level" => level = val()?.parse().ok().filter(|l| (1..=22).contains(l)).ok_or_else(|| "--level must be a number from 1 to 22".to_string())?,
             "--webview2-bootstrapper" => webview2 = Some(PathBuf::from(val()?)),
             "--sign-pfx" => sign_pfx = Some(PathBuf::from(val()?)),
             "--timestamp-url" => timestamp_url = Some(val()?),

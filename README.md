@@ -33,14 +33,14 @@ GloriaSetup is a Windows x64 installer toolchain written in Rust (`windows` 0.62
 - **Safe updates, downgrades, and uninstalls** — Removes only files tracked in `install-manifest.json`, preserves user data in `data_folders` unless `/PURGE` or the off-by-default data removal checkbox is selected (or `/WIPE` / "remove everything", which also clears leftover files and setup logs), refuses silent downgrades without `/ALLOWDOWNGRADE`, and self-deletes `uninstall.exe` via a `%TEMP%` trampoline.
 - **Legacy migration and optional WebView2** — Detects prior NSIS/MSI/Inno installs, backs up `data_folders` before running legacy uninstallers, and optionally bundles `MicrosoftEdgeWebview2Setup.exe` to run only when WebView2 is missing.
 - **Resource patching and Authenticode signing** — Replaces the stub's PE icons and version info with the target app's own assets, appends the `GLSETUP\0` tar/zstd payload, and signs `uninstall.exe` and the final setup via `signtool.exe`.
-- **CI and npm distribution** — Ships as a composite GitHub Action (`action.yml`) that downloads checksum-verified binaries and attaches setups to GitHub Releases, plus the `gloria-setup` npm package with CLI and JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
+- **CI and npm distribution** — Ships as a composite GitHub Action (`action.yml`) that downloads checksum-verified binaries and attaches setups to GitHub Releases, plus the `gloria-setup` npm package with CLI and JS/TS API (`pack`, `check`, `inspect`, `packPath`, `stubPath`).
 
 ## Screenshots
 
 <p align="center">
   <img src="assets/11.png" alt="GloriaSetup ready-to-install screen" width="640" />
   <br />
-  <em>Welcome screen displaying the packaged app's icon, version badge, install location, unpacked size, and options toggle.</em>
+  <em>Welcome screen displaying the packaged app's icon, version badge, install location, and unpacked size.</em>
 </p>
 
 <p align="center">
@@ -52,7 +52,7 @@ GloriaSetup is a Windows x64 installer toolchain written in Rust (`windows` 0.62
 <p align="center">
   <img src="assets/33.png" alt="GloriaSetup completion screen" width="640" />
   <br />
-  <em>Completion screen confirming installed version and location with direct launch and close actions.</em>
+  <em>Completion screen confirming the installed version and location, with Start menu and desktop shortcut options and launch and close actions.</em>
 </p>
 
 ## How it works
@@ -80,7 +80,7 @@ flowchart LR
 npm install --save-dev gloria-setup
 ```
 
-The `gloria-setup` package bundles `gloria-pack.exe` and `gloria-stub.exe` and exposes `npx gloria-pack` alongside a JS/TS API (`pack`, `inspect`, `packPath`, `stubPath`).
+The `gloria-setup` package bundles `gloria-pack.exe` and `gloria-stub.exe` and exposes `npx gloria-pack` alongside a JS/TS API (`pack`, `check`, `inspect`, `packPath`, `stubPath`).
 
 ### From source
 
@@ -242,4 +242,4 @@ Outputs: `setup-path`, `setup-name`, `signed`.
 - **Running application or locked files (`exit code 3`):** Close the target application before retrying. In silent mode (`/S`), the stub waits a grace period and attempts to force-close matching processes before returning `3`.
 - **WebView2 installation fails (`exit code 5`):** For `needs_webview2 = true` apps, bundle `MicrosoftEdgeWebview2Setup.exe` via `--webview2-bootstrapper`. If the target machine lacks WebView2 and has no network access, the bootstrapper fails and nothing is left installed.
 - **SmartScreen warning on unsigned setups:** If `--sign-pfx` / `certificate` is omitted, the generated `.exe` is unsigned and Windows SmartScreen may warn until it builds reputation or is signed with a trusted certificate.
-- **Inspecting run logs:** Every real install, update, uninstall, or `--dry-run` writes a detailed log to `%TEMP%\GloriaSetup-<id>-<timestamp>.log`.
+- **Inspecting run logs:** Every real install, update, uninstall, or `--dry-run` writes a detailed log to `%TEMP%\GloriaSetup-<id>-<timestamp>.log` (`-2`, `-3`, … appended when two runs start in the same second).

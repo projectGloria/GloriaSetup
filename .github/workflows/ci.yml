@@ -16,8 +16,8 @@ jobs:
       CARGO_TERM_COLOR: always
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build (warning-free)
         run: cargo build --workspace --locked
@@ -54,7 +54,7 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit 1 }
           } finally { Pop-Location }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: gloria-setup-bin
           path: |
@@ -65,17 +65,21 @@ jobs:
   action:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build the dummy app
         shell: pwsh
         run: |
+          # The version comes from Cargo.toml, so this workflow never needs editing at release time.
+          $v = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if (-not $v) { throw 'no version in Cargo.toml' }
+          "VERSION=$v" >> $env:GITHUB_ENV
           cargo build --release --locked -p gloria-dummy
           if ($LASTEXITCODE -ne 0) { exit 1 }
           New-Item -ItemType Directory -Force app | Out-Null
           Copy-Item target\release\dummy.exe app\
-          Set-Content -Encoding ascii app\version.txt 0.3.0
+          Set-Content -Encoding ascii app\version.txt $v
           $pw = [guid]::NewGuid().ToString()
           "::add-mask::$pw"
           $env:GLORIA_SIGN_PASSWORD = $pw
@@ -91,7 +95,7 @@ jobs:
           app-dir: app
           manifest: examples/dummy/gloria.toml
           icon: examples/dummy/icons/dummy-a.ico
-          version: 0.3.0
+          version: ${{ env.VERSION }}
           certificate: ${{ env.CERT_B64 }}
           certificate-password: ${{ env.CERT_PW }}
           timestamp-url: ''
@@ -101,15 +105,16 @@ jobs:
         shell: pwsh
         env:
           SETUP: ${{ steps.setup.outputs.setup-path }}
+          SETUP_NAME: ${{ steps.setup.outputs.setup-name }}
         run: |
-          if ('${{ steps.setup.outputs.setup-name }}' -ne 'GloriaSetupDummy_0.3.0_x64-setup.exe') { throw 'unexpected name' }
+          if ($env:SETUP_NAME -ne "GloriaSetupDummy_$($env:VERSION)_x64-setup.exe") { throw "unexpected name $env:SETUP_NAME" }
           if ('${{ steps.setup.outputs.signed }}' -ne 'true') { throw 'not reported as signed' }
           $s = Get-AuthenticodeSignature $env:SETUP
           if (-not $s.SignerCertificate) { throw "no signature: $($s.StatusMessage)" }
           $p = Start-Process $env:SETUP -ArgumentList '/S', '--dry-run' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "dry run exit $($p.ExitCode)" }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dummy-setup
           path: ${{ steps.setup.outputs.setup-path }}

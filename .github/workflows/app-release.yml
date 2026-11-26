@@ -142,6 +142,11 @@ jobs:
           elif [[ "$IS_DRAFT" == "true" ]]; then
             echo "Reusing draft release $TAG"
             gh release edit "$TAG" --target "$TARGET_SHA" --notes "$NOTES"
+            # Files a failed run uploaded may not be built this time; start from an empty draft so SHA256SUMS.txt
+            # covers everything in the release.
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r a; do
+              [[ -n "$a" ]] && gh release delete-asset "$TAG" "$a" --yes
+            done
           else
             ARGS=(release create "$TAG" --draft --target "$TARGET_SHA" --title "$TAG" --notes "$NOTES")
             if [[ "$VERSION" == *-* ]]; then ARGS+=(--prerelease); fi

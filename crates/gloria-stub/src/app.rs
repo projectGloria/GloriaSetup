@@ -5,13 +5,33 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use gloria_core::manifest::RuntimeManifest;
-use gloria_core::paths::{self, PathProblem, SystemDirs};
+use gloria_core::paths::{self, SystemDirs};
 
 use crate::gfx::{Color, Image};
 use crate::i18n::Strings;
 
 pub fn env(k: &str) -> Option<String> {
     std::env::var(k).ok().filter(|v| !v.is_empty())
+}
+
+/// The folder rules for this machine. `%TEMP%` is often an 8.3 path (`C:\Users\RUNNER~1\...`), so every variable is
+/// expanded to its long form first or a long-form install path inside it would not match.
+pub fn system_dirs() -> SystemDirs {
+    SystemDirs::from_env(|k| env(k).map(|v| long_path(&v)))
+}
+
+/// `GetLongPathNameW`, or the input unchanged when the path does not exist or the call fails.
+pub fn long_path(p: &str) -> String {
+    use windows::core::HSTRING;
+    use windows::Win32::Storage::FileSystem::GetLongPathNameW;
+    let h = HSTRING::from(p);
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: `h` is NUL-terminated and `buf` is a writable slice; the call writes at most `buf.len()` units.
+    let n = unsafe { GetLongPathNameW(&h, Some(&mut buf)) } as usize;
+    if n == 0 || n >= buf.len() {
+        return p.to_string();
+    }
+    String::from_utf16_lossy(&buf[..n])
 }
 
 // ───────────────────────────── app info ─────────────────────────────
@@ -58,7 +78,6 @@ impl AppInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Welcome,
-    Options,
     Progress,
     Done,
     Update,
@@ -72,10 +91,8 @@ pub enum Page {
 }
 
 /// `--page` / screenshot names, in mockup order.
-pub const PAGE_IDS: [&str; 14] = [
+pub const PAGE_IDS: [&str; 12] = [
     "welcome",
-    "options",
-    "options-error",
     "progress",
     "done",
     "update",
@@ -152,12 +169,12 @@ pub type Shared = Arc<Mutex<JobStatus>>;
 /// Everything the user can do in the window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Act {
-    Go(Page),
     Start,
     Cancel,
     Choice(bool),
-    /// "Add to Start menu" (options and done screens).
+    /// "Add to Start menu" (done screen).
     StartMenu,
+    /// "Add desktop shortcut" (done screen).
     Desktop,
     Purge,
     /// "Remove everything" on the uninstall page (turns `purge` on with it).
@@ -165,8 +182,6 @@ pub enum Act {
     ConfirmDown,
     Modal(Option<Modal>),
     Force,
-    Browse,
-    Field,
     Minimize,
     Close,
     LaunchApp,
@@ -185,7 +200,6 @@ pub enum Effect {
     None,
     Exit(i32),
     Minimize,
-    Browse,
     /// Apply the done screen's choices, launch the installed app, then exit 0.
     LaunchAndExit,
     /// Apply the done screen's choices (real mode), then exit 0.
@@ -202,8 +216,6 @@ pub enum Effect {
 
 pub struct FolderCheck {
     pub final_dir: PathBuf,
-    pub appended: bool,
-    pub err: Option<String>,
 }
 
 pub struct App {
@@ -215,6 +227,7 @@ pub struct App {
     pub folder: String,
     /// "Add to Start menu": on by default.
     pub start_menu: bool,
+    /// "Add desktop shortcut": on by default.
     pub desktop: bool,
     pub purge: bool,
     pub wipe: bool,
@@ -230,7 +243,6 @@ pub struct App {
     pub job: Option<Shared>,
     pub job_t0: f64,
     pub status: JobStatus,
-    pub free: Option<u64>,
     /// The page the app opened on; preview "Cancel" returns there.
     pub home: Page,
     sys: SystemDirs,
@@ -255,7 +267,7 @@ impl App {
             page_t0: 0.0,
             folder,
             start_menu: true,
-            desktop: false,
+            desktop: true,
             purge: false,
             wipe: false,
             repair: true,
@@ -270,10 +282,9 @@ impl App {
             job: None,
             job_t0: 0.0,
             status: JobStatus::default(),
-            free: None,
             home: Page::Welcome,
-            sys: SystemDirs::from_env(env),
-            check: FolderCheck { final_dir: PathBuf::new(), appended: false, err: None },
+            sys: system_dirs(),
+            check: FolderCheck { final_dir: PathBuf::new() },
             credit: None,
             gloria: None,
             closing: None,
@@ -314,11 +325,6 @@ impl App {
         self.folder = default.clone();
         self.flow = if id.starts_with("update") { Flow::Update } else { Flow::Install };
         let page = match id {
-            "options" => Page::Options,
-            "options-error" => {
-                self.folder = format!(r"C:\Program Files\{name}");
-                Page::Options
-            }
             "progress" => Page::Progress,
             "done" => Page::Done,
             "update" => Page::Update,
@@ -392,21 +398,11 @@ impl App {
 
     /// Re-validates the folder field (cheap: no disk writes).
     pub fn recheck(&mut self) {
-        self.check = check_folder(&self.folder, &self.info, &self.sys, &self.s);
-        self.free = free_space(&self.check.final_dir);
-        if let (None, Some(free)) = (&self.check.err, self.free) {
-            if free < self.info.m.unpacked_size {
-                self.check.err = Some(self.s.tv(
-                    "options.errSpace",
-                    &[("drive", &drive(&self.folder)), ("req", &self.s.size(self.info.m.unpacked_size)), ("free", &self.s.size(free))],
-                ));
-            }
-        }
+        self.check = check_folder(&self.folder, &self.info, &self.sys);
     }
 
     pub fn can_start(&self) -> bool {
         match self.page {
-            Page::Options => self.check.err.is_none(),
             Page::Downgrade => self.confirm_down,
             _ => true,
         }
@@ -414,12 +410,6 @@ impl App {
 
     pub fn act(&mut self, a: Act, now: f64) -> Effect {
         match a {
-            Act::Go(p) => {
-                if p == Page::Uninstall {
-                    self.flow = Flow::Uninstall;
-                }
-                self.go(p, now);
-            }
             Act::Start => {
                 if !self.can_start() {
                     return Effect::None;
@@ -477,8 +467,7 @@ impl App {
                 }
                 return self.start(Flow::Update, now);
             }
-            Act::Browse => return Effect::Browse,
-            Act::Field | Act::Noop => {}
+            Act::Noop => {}
             Act::Minimize => return Effect::Minimize,
             Act::Close => {
                 let code = match self.page {
@@ -593,57 +582,25 @@ impl App {
     }
 }
 
-fn drive(folder: &str) -> String {
-    let d: String = folder.chars().take(2).collect::<String>().to_uppercase();
-    if d.len() == 2 && d.ends_with(':') {
-        d
-    } else {
-        "C:".into()
-    }
-}
-
-/// Validates the folder field and applies the "append \<Name>" rule: a folder that exists, is not empty and is not
+/// Resolves the folder field and applies the "append \<Name>" rule: a folder that exists, is not empty and is not
 /// an install of this app gets the app name added.
-pub fn check_folder(raw: &str, info: &AppInfo, sys: &SystemDirs, s: &Strings) -> FolderCheck {
+pub fn check_folder(raw: &str, info: &AppInfo, sys: &SystemDirs) -> FolderCheck {
     let raw = raw.trim().trim_matches('"');
     let p = PathBuf::from(raw.trim_end_matches(['\\', '/']).to_string() + if raw.len() <= 3 { "\\" } else { "" });
-    let err = |key: &str| FolderCheck { final_dir: p.clone(), appended: false, err: Some(s.t(key)) };
-    if let Err(e) = paths::check_install_dir(&p, sys, &info.data_paths()) {
-        return err(match e {
-            PathProblem::NotAbsolute => "options.errRelative",
-            PathProblem::DriveRoot => "options.errRoot",
-            PathProblem::Unc => "options.errUnc",
-            PathProblem::SystemFolder => "options.errProtected",
-            PathProblem::DataFolder => "options.errData",
-            PathProblem::BadCharacters => "options.errChars",
-        });
-    }
+    let root = match paths::check_install_dir(&p, sys, &info.data_paths()) {
+        Ok(()) => false,
+        // A shared root is only ever a parent: always append \<Name>.
+        Err(paths::PathProblem::SharedRoot) => true,
+        Err(_) => return FolderCheck { final_dir: p },
+    };
     let ours = p.join(gloria_core::manifest::INSTALL_MANIFEST_NAME).exists();
     let non_empty = std::fs::read_dir(&p).map(|mut d| d.next().is_some()).unwrap_or(false);
-    if non_empty && !ours {
+    if root || (non_empty && !ours) {
         let fin = p.join(paths::sanitize_file_name(info.name()));
-        if let Err(e) = paths::check_install_dir(&fin, sys, &info.data_paths()) {
-            let _ = e;
-            return err("options.errData");
+        if paths::check_install_dir(&fin, sys, &info.data_paths()).is_ok() {
+            return FolderCheck { final_dir: fin };
         }
-        return FolderCheck { final_dir: fin, appended: true, err: None };
     }
-    FolderCheck { final_dir: p, appended: false, err: None }
-}
-
-/// Free bytes on the volume of `p` (walks up to the first existing ancestor).
-pub fn free_space(p: &Path) -> Option<u64> {
-    use windows::core::HSTRING;
-    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    let mut q = Some(p);
-    while let Some(x) = q {
-        if x.exists() {
-            let mut free = 0u64;
-            let ok = unsafe { GetDiskFreeSpaceExW(&HSTRING::from(x.as_os_str()), Some(&mut free), None, None) };
-            return ok.ok().map(|_| free);
-        }
-        q = x.parent();
-    }
-    None
+    FolderCheck { final_dir: p }
 }
 

@@ -52,6 +52,15 @@ fn run(args: &Args) -> i32 {
     log::open(&src.m.app.id);
     log!("GloriaSetup {} ({}), {} {}", gloria_core::GLORIA_SETUP_VERSION, src.exe.display(), src.m.app.id, src.m.app.version);
     log!("args: {args:?}");
+    // One engine per app at a time. The plain `uninstall.exe` only hands off to its trampoline (which takes the
+    // lock), so it must not hold it.
+    if args.cleanup.is_some() || !src.payload.is_uninstaller() {
+        let wait = if args.silent { std::time::Duration::from_secs(120) } else { std::time::Duration::from_secs(3) };
+        if !sys::instance_lock(&src.m.app.id, wait) {
+            log!("another GloriaSetup for {} is still running", src.m.app.id);
+            return Exit::FilesLocked.code();
+        }
+    }
     if let Some(dir) = args.cleanup.clone() {
         return real::cleanup(args, src, &dir);
     }
@@ -63,6 +72,17 @@ fn run(args: &Args) -> i32 {
 
 /// `--preview` / `--screenshot`: the UI with a sample (or `--manifest`) app and simulated jobs. Nothing is installed.
 fn preview(args: &Args) -> windows::core::Result<i32> {
+    // Preview never touches the disk, so it shows a neutral profile instead of this machine's user name (screenshots
+    // end up in docs).
+    for (k, v) in [
+        ("USERPROFILE", r"C:\Users\you"),
+        ("APPDATA", r"C:\Users\you\AppData\Roaming"),
+        ("LOCALAPPDATA", r"C:\Users\you\AppData\Local"),
+        ("TEMP", r"C:\Users\you\AppData\Local\Temp"),
+        ("TMP", r"C:\Users\you\AppData\Local\Temp"),
+    ] {
+        std::env::set_var(k, v);
+    }
     let m = match &args.manifest {
         Some(p) => {
             let src = std::fs::read_to_string(p).map_err(|e| windows::core::Error::new(windows::core::HRESULT(-1), e.to_string()))?;
@@ -140,7 +160,7 @@ fn resource(kind: PCWSTR, id: u16) -> Option<&'static [u8]> {
 /// Rebuilds an .ico from the largest image of RT_GROUP_ICON 1.
 fn own_icon() -> Option<Vec<u8>> {
     let grp = resource(RT_GROUP_ICON, 1)?;
-    let count = u16::from_le_bytes([grp[4], grp[5]]) as usize;
+    let count = u16::from_le_bytes(grp.get(4..6)?.try_into().ok()?) as usize;
     let mut best: Option<res::IconImage> = None;
     for i in 0..count {
         let e = grp.get(6 + i * 14..6 + i * 14 + 14)?;

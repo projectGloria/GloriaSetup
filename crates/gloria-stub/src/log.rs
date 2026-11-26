@@ -1,6 +1,6 @@
 //! `%TEMP%\GloriaSetup-<id>-<timestamp>.log`: every run writes one (docs/design.md §11). The error screen links to it.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -18,12 +18,23 @@ fn stamp(with_seconds: bool) -> String {
     }
 }
 
-/// Opens the log for app `id`. Failing to open it never stops an install.
+/// Opens a new log for app `id`. Never reuses a file: two runs in the same second (the `uninstall.exe` and its
+/// trampoline, say) get `-2`, `-3`, ... instead of truncating each other. Failing to open it never stops an install.
 pub fn open(id: &str) -> Option<PathBuf> {
-    let p = std::env::temp_dir().join(format!("GloriaSetup-{id}-{}.log", stamp(false)));
-    let f = File::create(&p).ok()?;
-    *LOG.lock().unwrap() = Some((f, p.clone()));
-    Some(p)
+    let base = format!("GloriaSetup-{id}-{}", stamp(false));
+    for n in 1..100 {
+        let name = if n == 1 { format!("{base}.log") } else { format!("{base}-{n}.log") };
+        let p = std::env::temp_dir().join(name);
+        match OpenOptions::new().write(true).create_new(true).open(&p) {
+            Ok(f) => {
+                *LOG.lock().unwrap() = Some((f, p.clone()));
+                return Some(p);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return None,
+        }
+    }
+    None
 }
 
 pub fn path() -> Option<PathBuf> {

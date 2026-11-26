@@ -196,7 +196,6 @@ name = "gloria-stub"
 version = "0.3.0"
 dependencies = [
  "gloria-core",
- "gloria-pack",
  "serde",
  "serde_json",
  "toml",

@@ -15,7 +15,7 @@ use gloria_core::install_manifest::{self, plan_removal, InstallManifest, Options
 use gloria_core::journal::{self, Recovered};
 use gloria_core::legacy::{self, Found};
 use gloria_core::manifest::{AppManifest, RuntimeManifest, INSTALL_MANIFEST_NAME, WEBVIEW2_DIR, WEBVIEW2_SETUP_NAME, WORK_DIR};
-use gloria_core::paths::{self, is_within, norm, parse_data_folder, PathProblem, SystemDirs};
+use gloria_core::paths::{self, is_within, norm, parse_data_folder, PathProblem};
 use gloria_core::payload::{self, Payload};
 use gloria_core::registry;
 
@@ -106,15 +106,19 @@ pub fn data_folders(app: &AppManifest, extra: &[String]) -> Vec<PathBuf> {
     out
 }
 
-/// The silent-mode folder rule: same checks as the Options page, plus the "append \<Name>" rule and a write probe.
+/// The `/D=` folder rule: `paths::check_install_dir`, plus the "append \<Name>" rule for a non-empty folder that isn't ours.
 pub fn resolve_dir(app: &AppManifest, raw: &Path) -> Result<PathBuf, PathProblem> {
-    let sys = SystemDirs::from_env(crate::app::env);
+    let sys = crate::app::system_dirs();
     let data = data_folders(app, &[]);
-    paths::check_install_dir(raw, &sys, &data)?;
+    // A shared root (`%LOCALAPPDATA%\Programs`, the profile folder) is only ever a parent: always append \<Name>.
+    let root = match paths::check_install_dir(raw, &sys, &data) {
+        Err(PathProblem::SharedRoot) => true,
+        r => r.map(|_| false)?,
+    };
     // Ours: our install manifest, or the journal of an install of ours that was cut short.
     let ours = InstallManifest::load(raw).map(|m| m.app_id == app.id).unwrap_or(false) || journal::owner(raw).as_deref() == Some(app.id.as_str());
     let non_empty = fs::read_dir(raw).map(|mut d| d.next().is_some()).unwrap_or(false);
-    let dir = if non_empty && !ours { raw.join(paths::sanitize_file_name(&app.name)) } else { raw.to_path_buf() };
+    let dir = if root || (non_empty && !ours) { raw.join(paths::sanitize_file_name(&app.name)) } else { raw.to_path_buf() };
     paths::check_install_dir(&dir, &sys, &data)?;
     Ok(dir)
 }
@@ -183,6 +187,10 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
     let app = &src.m.app;
     let dir = &req.dir;
     log!("install {} {} into {} (start menu: {}, desktop: {}, purge: {}, dry run: {})", app.id, app.version, dir.display(), req.start_menu, req.desktop, req.purge, req.dry_run);
+    // Every caller (silent, UI, `/D=`, an existing install) ends here, so the folder rules are enforced here too.
+    if let Err(p) = paths::check_install_dir(dir, &crate::app::system_dirs(), &data_folders(app, &[])) {
+        return Err(Fail::new(Exit::InvalidArgs, format!("err.reasonArgs|{}: {p:?}", dir.display())));
+    }
     let prev = InstallManifest::load(dir).ok().filter(|m| m.app_id == app.id);
     if let Some(p) = &prev {
         log!("replacing {} ({} files)", p.version, p.files.len());
@@ -247,19 +255,28 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
     let prev = InstallManifest::load(dir).ok().filter(|m| m.app_id == app.id);
 
     let created_dir = !dir.exists();
-    fs::create_dir_all(dir).map_err(|e| Fail::new(Exit::InvalidArgs, format!("options.errWrite|{}: {e}", dir.display())))?;
+    // Every missing folder up to the first existing one, deepest first, so a failure removes all of them.
+    let mut created_chain = Vec::new();
+    let mut p = Some(dir.as_path());
+    while let Some(x) = p.filter(|x| !x.exists()) {
+        created_chain.push(x.to_path_buf());
+        p = x.parent();
+    }
+    fs::create_dir_all(dir).map_err(|e| Fail::new(Exit::InvalidArgs, format!("err.reasonArgs|{}: {e}", dir.display())))?;
     let work = dir.join(WORK_DIR);
     let staging = work.join(journal::STAGING);
     // Only for failures before the journal exists; after that, `journal::recover` undoes everything.
     let fail_clean = |f: Fail| -> Fail {
         let _ = install_manifest::remove_tree_no_follow(&work, false, &mut |_| {});
         if created_dir {
-            let _ = fs::remove_dir(dir);
+            for d in &created_chain {
+                let _ = fs::remove_dir(d);
+            }
             remove_empty_suite_dir(dir);
         }
         f
     };
-    fs::create_dir_all(&staging).map_err(|e| fail_clean(Fail::new(Exit::InvalidArgs, format!("options.errWrite|{e}"))))?;
+    fs::create_dir_all(&staging).map_err(|e| fail_clean(Fail::new(Exit::InvalidArgs, format!("err.reasonArgs|{e}"))))?;
     set_hidden(&work);
 
     // 1. Stage.
@@ -434,51 +451,72 @@ pub fn install(src: &Source, req: &Request, progress: Progress) -> Result<(), Fa
     Ok(())
 }
 
-/// Applies the done screen's "Add to Start menu" choice to a finished install: creates or removes the Start Menu
-/// shortcut and records it in the install manifest. Logged, never fatal.
-pub fn set_start_menu(app: &AppManifest, dir: &Path, on: bool, dry_run: bool) {
-    let (Some(lnk), _) = shortcut_paths(app) else { return };
-    let Ok(mut m) = InstallManifest::load(dir).map_err(|e| log!("start menu: {INSTALL_MANIFEST_NAME}: {e}")) else { return };
+/// Applies the done screen's shortcut choices ("Add to Start menu" and "Add desktop shortcut") to a finished install:
+/// creates or removes each `.lnk` and records the result in the install manifest. Logged, never fatal.
+pub fn set_shortcuts(app: &AppManifest, dir: &Path, start_menu: bool, desktop: bool, dry_run: bool) {
+    let Ok(mut m) = InstallManifest::load(dir).map_err(|e| log!("shortcuts: {INSTALL_MANIFEST_NAME}: {e}")) else { return };
     if m.app_id != app.id {
         return;
     }
-    let listed = m.shortcuts.iter().any(|s| norm(Path::new(s)) == norm(&lnk));
-    if on == (listed && lnk.exists()) && m.options.start_menu_shortcut == on {
-        return;
-    }
-    if dry_run {
-        log!("[dry run] would {} shortcut {}", if on { "create" } else { "remove" }, lnk.display());
-        return;
-    }
-    if on {
-        match sys::create_shortcut(&lnk, &dir.join(app.main_exe_rel()), app.app_user_model_id.as_deref(), &app.name) {
-            Ok(()) => {
-                log!("shortcut {}", lnk.display());
-                if !listed {
-                    m.shortcuts.push(lnk.to_string_lossy().into_owned());
+    let (start, desk) = shortcut_paths(app);
+    let exe = dir.join(app.main_exe_rel());
+    let mut changed = false;
+    let mut notify = false;
+
+    for (lnk, want, opt, label) in [
+        (start, start_menu, &mut m.options.start_menu_shortcut, "Add to Start menu"),
+        (desk, desktop, &mut m.options.desktop_shortcut, "Add desktop shortcut"),
+    ] {
+        let Some(lnk) = lnk else { continue };
+        let listed = m.shortcuts.iter().any(|s| norm(Path::new(s)) == norm(&lnk));
+        if want == (listed && lnk.exists()) && *opt == want {
+            continue;
+        }
+        if dry_run {
+            log!("[dry run] would {} shortcut {}", if want { "create" } else { "remove" }, lnk.display());
+            continue;
+        }
+        if want {
+            match sys::create_shortcut(&lnk, &exe, app.app_user_model_id.as_deref(), &app.name) {
+                Ok(()) => {
+                    log!("shortcut {}", lnk.display());
+                    if !listed {
+                        m.shortcuts.push(lnk.to_string_lossy().into_owned());
+                    }
+                    *opt = true;
+                    changed = true;
+                    notify = true;
                 }
+                Err(e) => log!("shortcut {} failed: {e}", lnk.display()),
             }
-            Err(e) => {
-                log!("shortcut {} failed: {e}", lnk.display());
-                return;
+        } else {
+            // Only a shortcut this install made (a same-named one from elsewhere is not ours to delete).
+            if listed && lnk.exists() {
+                if let Err(e) = fs::remove_file(&lnk) {
+                    log!("removing shortcut {} failed: {e}", lnk.display());
+                    continue;
+                }
+                log!("removed shortcut {} ({label} unticked)", lnk.display());
+            } else if lnk.exists() {
+                log!("left {} alone ({label} unticked, but this install did not make it)", lnk.display());
+            } else {
+                log!("{label} unticked; no shortcut to remove");
             }
+            m.shortcuts.retain(|s| norm(Path::new(s)) != norm(&lnk));
+            *opt = false;
+            changed = true;
+            notify = true;
         }
-    } else {
-        // Only a shortcut this install made (a same-named one from elsewhere is not ours to delete).
-        if listed && lnk.exists() {
-            if let Err(e) = fs::remove_file(&lnk) {
-                log!("removing shortcut {} failed: {e}", lnk.display());
-                return;
-            }
+    }
+
+    if changed {
+        if let Err(e) = m.save(dir) {
+            log!("{INSTALL_MANIFEST_NAME}: {e}");
         }
-        log!("removed shortcut {} (Add to Start menu unticked)", lnk.display());
-        m.shortcuts.retain(|s| norm(Path::new(s)) != norm(&lnk));
     }
-    m.options.start_menu_shortcut = on;
-    if let Err(e) = m.save(dir) {
-        log!("{INSTALL_MANIFEST_NAME}: {e}");
+    if notify {
+        sys::notify_shell();
     }
-    sys::notify_shell();
 }
 
 /// Undoes an install that died mid-commit (see `gloria_core::journal`). A failure here stops the run: the backups
@@ -623,7 +661,20 @@ pub fn migrate(mg: &Migration, progress: Progress) -> Result<(), Fail> {
     log!("migrating {} legacy install(s) of {} (purge: {}, dry run: {})", mg.found.len(), app.id, mg.purge, mg.dry_run);
     progress(2.0, "");
 
-    // 1. Back up the data folders. A failed backup stops here, before anything is removed.
+    // 1. Back up the data folders. A failed backup stops here, before anything is removed. A backup left by an
+    // earlier run whose restore failed may hold the only copy of some files: put those back first, then start clean.
+    if !mg.purge && !mg.dry_run && backup.exists() {
+        for (i, d) in data.iter().enumerate() {
+            let b = backup.join(i.to_string());
+            if b.exists() {
+                let mut n = 0;
+                copy_missing(&b, d, &mut n).map_err(|e| Fail::io(&e, &format!("restore {} from an earlier backup (kept in {})", d.display(), backup.display())))?;
+                log!("restored {n} missing files into {} from an earlier backup", d.display());
+            }
+        }
+        install_manifest::remove_tree_no_follow(&backup, false, &mut |_| {}).map_err(|e| Fail::io(&e, &format!("remove the earlier backup {}", backup.display())))?;
+        log!("removed the earlier backup {}", backup.display());
+    }
     if !mg.purge {
         for (i, d) in data.iter().enumerate().filter(|(_, d)| d.exists()) {
             if mg.dry_run {
@@ -655,7 +706,8 @@ pub fn migrate(mg: &Migration, progress: Progress) -> Result<(), Fail> {
                 continue;
             }
             if let Some(d) = &f.dir {
-                if d.is_dir() && !sys::close_apps(d, None, Duration::from_secs(8), true).is_empty() {
+                // Only a silent run force-closes; in the UI an app that will not close is reported so the user can retry.
+                if d.is_dir() && !sys::close_apps(d, None, Duration::from_secs(8), mg.silent).is_empty() {
                     return Err(Fail::new(Exit::FilesLocked, "err.reasonV"));
                 }
             }
@@ -739,15 +791,24 @@ pub struct Uninstall<'a> {
     pub dry_run: bool,
     /// The uninstaller that started this trampoline; waited for so its exe can be deleted.
     pub wait_pid: Option<u32>,
+    /// That uninstaller is waiting for our exit code (silent mode), so it is not waited for up front: whatever it
+    /// keeps locked (its own exe) comes back as leftovers for [`remove_leftovers`] once it has exited.
+    pub parent_waits: bool,
 }
 
 /// Removes exactly what the install manifest lists, the shortcuts and the registry key; user data only if `purge`;
 /// with `wipe`, everything else this app and GloriaSetup left behind too.
 pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
+    uninstall_keep(u, progress).map(|_| ())
+}
+
+/// [`uninstall`], returning the removal steps worth retrying later: what could not be removed yet and the folders
+/// that may only be empty once that is gone.
+pub fn uninstall_keep(u: &Uninstall, progress: Progress) -> Result<Vec<Removal>, Fail> {
     let app = u.app;
     let dir = &u.dir;
     log!("uninstall {} from {} (purge: {}, wipe: {}, dry run: {})", app.id, dir.display(), u.purge, u.wipe, u.dry_run);
-    if let Some(pid) = u.wait_pid {
+    if let Some(pid) = u.wait_pid.filter(|_| !u.parent_waits) {
         if !sys::wait_pid(pid, Duration::from_secs(30)) {
             log!("uninstaller {pid} is still running");
         }
@@ -782,6 +843,7 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
     let plan = plan_removal(dir, &m);
     let n = plan.len().max(1);
     let mut skipped = 0;
+    let mut retry = Vec::new();
     for (i, step) in plan.iter().enumerate() {
         let r = install_manifest::execute_removal(std::slice::from_ref(step), u.dry_run);
         for s in &r.done {
@@ -790,6 +852,9 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
         for (p, why) in &r.skipped {
             skipped += 1;
             log!("could not remove {}: {why}", p.display());
+        }
+        if !r.skipped.is_empty() || (matches!(step, Removal::Dir(_)) && r.done.is_empty()) {
+            retry.push(step.clone());
         }
         let shown = match step {
             Removal::File(p) | Removal::Shortcut(p) | Removal::Dir(p) => p.to_string_lossy(),
@@ -830,7 +895,31 @@ pub fn uninstall(u: &Uninstall, progress: Progress) -> Result<(), Fail> {
     }
     progress(100.0, "");
     log!("uninstall done ({skipped} items skipped)");
-    Ok(())
+    if u.wipe && m.created_install_dir && dir.exists() {
+        retry.push(Removal::Dir(dir.clone()));
+    }
+    Ok(retry)
+}
+
+/// Second pass of a silent uninstall once the waiting `uninstall.exe` has exited: its exe, then the folders that
+/// held it. Only steps [`uninstall_keep`] planned from the install manifest; folders go only when empty.
+pub fn remove_leftovers(u: &Uninstall, retry: &[Removal]) {
+    if u.dry_run || retry.is_empty() {
+        return;
+    }
+    if let Some(pid) = u.wait_pid {
+        if !sys::wait_pid(pid, Duration::from_secs(30)) {
+            log!("uninstaller {pid} is still running");
+        }
+    }
+    let r = install_manifest::execute_removal(retry, false);
+    for s in &r.done {
+        log!("removed {s:?}");
+    }
+    for (p, why) in &r.skipped {
+        log!("could not remove {}: {why}", p.display());
+    }
+    remove_empty_suite_dir(&u.dir);
 }
 
 /// "Remove everything": deletes what is still in the install folder after the manifest-driven removal (files the app
@@ -842,7 +931,7 @@ fn wipe_install_dir(dir: &Path, m: &InstallManifest, dry_run: bool) {
         return;
     }
     let guard = legacy::Guard::from_env(crate::app::env);
-    let sys_dirs = SystemDirs::from_env(crate::app::env);
+    let sys_dirs = crate::app::system_dirs();
     if !guard.is_app_folder(dir) || paths::check_install_dir(dir, &sys_dirs, &[]).is_err() {
         log!("{} is not a folder that is safe to empty; left alone", dir.display());
         return;

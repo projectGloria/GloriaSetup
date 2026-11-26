@@ -1,6 +1,6 @@
 # projectGloria app release. Copy to .github/workflows/release.yml and edit only the `build` job.
 #
-# Runs only when started on purpose: /monjita-github-release, or `gh workflow run release.yml`.
+# Runs only when started on purpose: /gloria-github-release, or `gh workflow run release.yml`.
 # Pushing to main never releases.
 #
 #   check   (shared)  version files agree, version not released yet, gloria.toml valid, picks newest gloria-setup

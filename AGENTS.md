@@ -21,10 +21,10 @@ Per-user (no admin) Windows installer for projectGloria apps: Rust Win32/Direct2
 
 ## Personal Rules (Brain)
 - **Git Branching:** Never create new branches or git worktrees. Always work directly on `main` until explicitly told otherwise.
-- **Versioning (Minimal Changes):** When runtime code or packaging changes, bump the alpha number by `+1` (e.g., `0.1.0-alpha.1` -> `0.1.0-alpha.2`) across all version manifests in the repo **at most once per uncommitted change set** (check `git diff HEAD` first—if the working tree version is already ahead of `HEAD`, do not bump again until committed). Skip version bumps on docs-only or read-only tasks.
-- **Versioning (Major/Minor Changes):** Before changing minor/major versions or dropping `-alpha` on breaking or major feature work, stop and ask for the exact target version.
+- **Versioning:** Never bump versions during normal work. The user picks the version at release time and `/gloria-github-release` sets it in every version file at once; keep version files in sync with each other otherwise.
 - **Commit Format:** Write one plain sentence stating what changed and why; do not use `feat:`/`fix:`/`chore:` conventional-commit prefixes.
-- **Commit & Push Policy:** Never run `git commit`, `git tag`, or `git push` unless explicitly asked; never force-push to `main`, and push only after the build and tests pass.
+- **Commit & Push Policy:** Never run `git commit`, `git tag`, or `git push` unless explicitly asked; never force-push to `main`. When the user says "commit and push", verify the build and tests pass, commit on `main`, and push to `origin main`. Pushing never releases anything.
+- **Releases:** Releases happen only through `/gloria-github-release`, which bumps the version, pushes, runs `gh workflow run release.yml`, and watches it until the GitHub Release is live. Never create release tags or releases by hand.
 - **Path Privacy:** Always use `C:\Users\you` in documentation, comments, and examples—never hardcode the local machine's real username.
 - **Window Chrome:** Disable native OS titlebars; build an integrated frameless titlebar with drag region, double-click maximize, and custom min/max/close controls.
 - **Desktop Shell Lock:** Lock the app shell to `100vw x 100vh` (`overflow: hidden`) with internal scroll panes and `user-select: none` on UI chrome.
@@ -33,9 +33,10 @@ Per-user (no admin) Windows installer for projectGloria apps: Rust Win32/Direct2
 
 ## Playbooks (Read Before Task)
 - **Building & Packaging:** Read `.brain/building-the-project.md` before packaging, compiling release binaries, or building an installer.
-- **GitHub Actions & Releases:** Read `.brain/github-actions.md` before creating or modifying `.github/workflows/*.yml` or release automation.
+- **GitHub Actions & Releases:** Read `.brain/github-actions.md` before creating/modifying `.github/workflows/*.yml`, setting up release automation, or debugging a failed release.
 
 ## Repo Guardrails & Gotchas
+- **Release Workflow:** `.github/workflows/release.yml` is GloriaSetup's own release workflow (manual `workflow_dispatch`, publishing the GitHub Release and `gloria-setup` on npm)—do not replace it with `templates/release.yml`, which is the template for downstream projectGloria apps.
 - **Platform & Privilege:** Rust 1.80+, x64, `windows` crate 0.62; strictly per-user (never write HKLM or require admin, except elevating an old all-users uninstaller during legacy migration after asking).
 - **GloriaLauncher Contract:** Never edit sibling `GloriaLauncher` repo; write `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\projectGloria.<id>` with exact `DisplayName` (app name only), `DisplayVersion` (no `v`), unquoted `InstallLocation`, bare `DisplayIcon` (no quotes or `,0`), `UninstallString` (`"<dir>\uninstall.exe"`), `QuietUninstallString` (`+ /S`), `Publisher = projectGloria`, `EstimatedSize` DWORD KB, `NoModify`/`NoRepair = 1`, `GloriaSetup` = stub version.
 - **Icon Rules:** `gloria-pack` deletes every `RT_GROUP_ICON`/`RT_ICON` (all languages) before embedding the app's icon; `assets/brand/GloriaSetup.ico` appears only on bare stub, previews, `gloria-pack.exe`, and `--allow-default-icon` (TEST BUILD badge); `assets/brand/*` stay byte-for-byte unchanged (`GloriaSetup.png` is docs-only).
@@ -49,6 +50,6 @@ Per-user (no admin) Windows installer for projectGloria apps: Rust Win32/Direct2
 - **Debug Test Hooks:** Debug stubs honor `GLORIA_TEST_CRASH_AT=<n>` (exits 99 at commit step `n`), `GLORIA_TEST_WEBVIEW2=<file>`, and `GLORIA_TEST_NO_HKLM=1` (skips HKLM legacy scan). Dummy app supports `--hold`, `--stubborn`, `--quiet`/`GLORIA_DUMMY_QUIET=1`, `GLORIA_DUMMY_DATA`, `GLORIA_DUMMY_LEGACY_KEY`, `GLORIA_DUMMY_LEGACY_WIPE`, `GLORIA_DUMMY_WEBVIEW2_FAIL=1`.
 
 ## Done Criteria
-Run `cargo build --workspace` (warning-free), `cargo test --workspace`, and `cargo build --release -p gloria-stub -p gloria-pack` (confirm `target\release\gloria-stub.exe` < 5 MB). Verify `Cargo.toml` workspace version is synced and bumped only when required by the versioning rules.
+Run `cargo build --workspace` (warning-free), `cargo test --workspace`, and `cargo build --release -p gloria-stub -p gloria-pack` (confirm `target\release\gloria-stub.exe` < 5 MB). Verify all three Version Manifests (`Cargo.toml`, `npm/package.json`, `README.md`) agree and do not bump versions during normal work.
 
-<!-- brain-sync: 4401790b0df9 -->
+<!-- brain-sync: dbdb119dacdc -->

@@ -13,7 +13,6 @@ const PANEL2: Color = hex(0x121215);
 const RAISE: Color = hex(0x141418);
 const LINE: Color = hex(0x1f1f24);
 const LINE2: Color = hex(0x2a2a31);
-const TEXT: Color = hex(0xf2f1ee);
 const TEXT_HI: Color = hex(0xf4f4f6);
 const MUTED: Color = hex(0xa1a1aa);
 const DIM: Color = hex(0x8a8a96);
@@ -66,19 +65,14 @@ pub struct Input {
     pub hover: Option<Act>,
     pub pressed: Option<Act>,
     pub focus: Option<Act>,
-    /// The native edit control has focus (draws the focused field border).
-    pub field_focus: bool,
-    /// Draw the folder text with DirectWrite (screenshots, transitions); otherwise the native edit shows it.
-    pub field_text: bool,
     /// Footer GitHub link hover effect, 0 (rest) to 1 (fully in). The window animates it.
     pub link: f32,
 }
 
-/// Result of a frame: clickable regions in tab order, the path field rect, and whether it is visible.
+/// Result of a frame: clickable regions in tab order.
 #[derive(Default)]
 pub struct Frame {
     pub hits: Vec<Hit>,
-    pub field: Option<Rect>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -112,16 +106,15 @@ struct Ui<'u, 'a> {
     app: &'u App,
     inp: Input,
     hits: Vec<Hit>,
-    field: Option<Rect>,
     a: Color,
     now: f32,
 }
 
 pub fn draw(p: &mut Painter, app: &App, inp: Input, now: f64) -> Frame {
     let a = if app.page.danger() { DANGER } else { app.info.accent };
-    let mut ui = Ui { p, app, inp, hits: Vec::new(), field: None, a, now: now as f32 };
+    let mut ui = Ui { p, app, inp, hits: Vec::new(), a, now: now as f32 };
     ui.window(now);
-    Frame { hits: ui.hits, field: ui.field }
+    Frame { hits: ui.hits }
 }
 
 impl<'u, 'a> Ui<'u, 'a> {
@@ -147,19 +140,14 @@ impl<'u, 'a> Ui<'u, 'a> {
             let body = rect(1.0, BODY_Y, W - 2.0, H - BODY_Y - 1.0);
             self.p.clip(body);
             let saved = std::mem::take(&mut self.hits);
-            let mut inner_hits = Vec::new();
-            let mut inner_field = None;
             {
-                let (app, inp, a, nowf) = (self.app, self.inp, self.a, self.now);
+                let (app, a, nowf) = (self.app, self.a, self.now);
                 self.p.blurred(W, H, 5.0, |sub| {
-                    let mut u = Ui { p: sub, app, inp: Input { hover: None, focus: None, pressed: None, field_text: true, link: 0.0, ..inp }, hits: Vec::new(), field: None, a, now: nowf };
+                    let mut u = Ui { p: sub, app, inp: Input::default(), hits: Vec::new(), a, now: nowf };
                     u.wash();
                     u.page();
-                    inner_hits = u.hits;
-                    inner_field = u.field;
                 });
             }
-            let _ = (inner_hits, inner_field);
             self.hits = saved;
             let mk = ((now - app.modal_t0) as f32 / 0.15).clamp(0.0, 1.0);
             self.p.fill(body, BG.alpha(0.62 * mk));
@@ -170,7 +158,6 @@ impl<'u, 'a> Ui<'u, 'a> {
             if anim {
                 self.p.push_opacity(k);
                 self.p.translate(0.0, 8.0 * (1.0 - k));
-                self.inp.field_text = true;
             }
             self.page();
             if anim {
@@ -246,7 +233,6 @@ impl<'u, 'a> Ui<'u, 'a> {
         self.hits.push(Hit { r: CLOSE_BTN, act: Act::Close, enabled: true });
         match app.page {
             Page::Welcome => self.welcome(x),
-            Page::Options => self.options(x),
             Page::Progress | Page::UninstallProgress => self.progress(x),
             Page::Done => self.done(x),
             Page::Update => self.update(x),
@@ -653,65 +639,8 @@ impl<'u, 'a> Ui<'u, 'a> {
         self.facts(x, y + 26.0, w, &[("location", folder, false), ("size", app.s.size(app.info.m.unpacked_size), false)]);
         self.footer(
             false,
-            &[(&self.t("welcome.options"), Kind::Ghost, Some("sliders"), Act::Go(Page::Options), true)],
+            &[],
             &[(&self.t("welcome.install"), Kind::Primary, None, Act::Start, true, false)],
-        );
-    }
-
-    fn options(&mut self, _x: f32) {
-        let app = self.app;
-        let (x, w) = self.hero(64.0, Badge::None);
-        let mut y = self.kicker(x, CONTENT_Y, &self.t("options.kicker"), self.a);
-        y = self.heading(H2, x, y, w, &self.t("options.title"));
-        y += 18.0;
-        self.p.label(LBL, &self.up("options.location"), x, y, DIM2);
-        y += self.lh(LBL) + 8.0;
-        // Field + attached Browse button.
-        let browse = self.t("browse");
-        let bw = self.btn_w(&app.s.upper(&browse), Kind::Normal, Some("folder"));
-        let fr = rect(x, y, w - bw, 36.0);
-        let err = app.check.err.is_some();
-        self.p.fill(fr, PANEL);
-        let border = if err {
-            DANGER_LINE
-        } else if self.inp.field_focus {
-            self.a.alpha(0.7)
-        } else {
-            LINE2
-        };
-        self.p.border(rect(fr.x, fr.y, fr.w + 1.0, fr.h), border);
-        if self.inp.field_focus && !err {
-            self.p.border(rect(fr.x + 1.0, fr.y + 1.0, fr.w - 1.0, fr.h - 2.0), self.a.alpha(0.35));
-        }
-        self.field = Some(fr);
-        self.hits.push(Hit { r: fr, act: Act::Field, enabled: true });
-        if self.inp.field_text {
-            let ff = font(Family::Mono, 400, 11.5);
-            let t = self.p.g.text(ff, &app.folder, fr.w - 24.0, Wrap::Ellipsis);
-            self.p.text(&t, fr.x + 12.0, fr.cy() - self.lh(ff) / 2.0, TEXT);
-        }
-        self.button(fr.r(), y, &browse, Kind::Normal, Some("folder"), Act::Browse, true, false);
-        y += 36.0 + 7.0;
-        if let Some(e) = &app.check.err {
-            y = self.hint(x, y, w, "alert", DANGER, DANGER_SOFT, &[(e, None)]);
-        } else if app.check.appended {
-            let fin = app.check.final_dir.to_string_lossy().into_owned();
-            y = self.hint(x, y, w, "info", self.a, DIM, &[(&self.t("options.appended"), None), (&self.t("options.final"), Some(&fin))]);
-        } else {
-            let free = app.free.map(|f| app.s.size(f)).unwrap_or_else(|| "?".into());
-            let drive: String = app.folder.chars().take(2).collect::<String>().to_uppercase();
-            let s = app.s.tv("options.space", &[("req", &app.s.size(app.info.m.unpacked_size)), ("free", &free), ("drive", &drive)]);
-            y = self.hint(x, y, w, "folder", DIM, DIM, &[(&s, None)]);
-        }
-        y += 22.0;
-        self.p.label(LBL, &self.up("options.shortcuts"), x, y, DIM2);
-        let y0 = y + self.lh(LBL) + 10.0;
-        let y1 = self.checkbox(x, y0, w, &self.t("options.startMenu"), app.start_menu, Act::StartMenu, false, None);
-        self.checkbox(x, y1 + 10.0, w, &self.t("options.desktop"), app.desktop, Act::Desktop, false, None);
-        self.footer(
-            false,
-            &[(&self.t("back"), Kind::Normal, None, Act::Go(Page::Welcome), true)],
-            &[(&self.t("welcome.install"), Kind::Primary, None, Act::Start, !err, false)],
         );
     }
 
@@ -817,7 +746,8 @@ impl<'u, 'a> Ui<'u, 'a> {
         y = self.para(P, x, y + 10.0, w, &body, MUTED);
         let folder = app.check.final_dir.to_string_lossy().into_owned();
         let y = self.facts(x, y + 26.0, w, &[("version", app.info.version().into(), false), ("location", folder, false)]);
-        self.checkbox(x, y + 20.0, w, &self.t("done.startMenu"), app.start_menu, Act::StartMenu, false, None);
+        let y1 = self.checkbox(x, y + 18.0, w, &self.t("done.startMenu"), app.start_menu, Act::StartMenu, false, None);
+        self.checkbox(x, y1 + 10.0, w, &self.t("done.desktop"), app.desktop, Act::Desktop, false, None);
         self.footer(
             true,
             &[],
@@ -1113,7 +1043,8 @@ impl<'u, 'a> Ui<'u, 'a> {
             &[(&self.t("err.log"), Kind::Ghost, Some("file"), Act::OpenLog, true)],
             &[
                 (&self.t("close"), Kind::Normal, None, Act::Close, true, false),
-                (&self.t("err.retry"), Kind::Primary, Some("refresh"), Act::Start, true, false),
+                // A refused folder (6) fails the same way again, so there is nothing to retry.
+                (&self.t("err.retry"), Kind::Primary, Some("refresh"), Act::Start, e.code != gloria_core::exit::Exit::InvalidArgs.code(), false),
             ],
         );
     }

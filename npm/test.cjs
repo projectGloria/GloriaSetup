@@ -8,7 +8,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 
 const gloriaSetup = require("./index.cjs");
-const { packPath, stubPath, buildArgs, inspect } = gloriaSetup;
+const { packPath, stubPath, buildArgs, buildCheckArgs, check, inspect } = gloriaSetup;
 
 test("exports absolute paths to bundled binaries", () => {
   assert.equal(packPath, path.join(__dirname, "bin", "gloria-pack.exe"));
@@ -22,6 +22,8 @@ test("ESM wrapper exposes the same API as CJS", async () => {
   assert.equal(esm.buildArgs, buildArgs);
   assert.equal(esm.pack, gloriaSetup.pack);
   assert.equal(esm.inspect, inspect);
+  assert.equal(esm.check, check);
+  assert.equal(esm.buildCheckArgs, buildCheckArgs);
   assert.equal(esm.default.packPath, packPath);
 });
 
@@ -62,6 +64,18 @@ test("buildArgs maps all PackOptions fields and defaults --stub", () => {
   ]);
 });
 
+test("buildCheckArgs maps CheckOptions", () => {
+  assert.deepEqual(buildCheckArgs(), ["--check"]);
+  assert.throws(() => buildCheckArgs(null), /options object/);
+  assert.deepEqual(buildCheckArgs({ manifest: "gloria.toml", version: "v1.2.3", icon: "app.ico", appDir: "app" }), [
+    "--check",
+    "--manifest", "gloria.toml",
+    "--version", "v1.2.3",
+    "--icon", "app.ico",
+    "--app", "app",
+  ]);
+});
+
 test("package.json bin entries are normalized and executable", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"));
   assert.ok(pkg.bin && typeof pkg.bin === "object");
@@ -90,4 +104,10 @@ test("bundled CLI and inspect work when binaries are staged", {
 
   const info = inspect(stubPath);
   assert.match(info, /bare stub/);
+
+  const dummy = path.join(__dirname, "..", "examples", "dummy", "gloria.toml");
+  if (fs.existsSync(dummy)) {
+    assert.equal(check({ manifest: dummy }).status, 0);
+    assert.throws(() => check({ manifest: path.join(__dirname, "no-such-gloria.toml") }), /--check exited/);
+  }
 });

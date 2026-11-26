@@ -133,7 +133,20 @@ impl Guard {
             .iter()
             .filter_map(|v| get(v))
             .collect();
+        // Folders inside Program Files that many vendors share.
+        for v in ["CommonProgramFiles", "CommonProgramFiles(x86)", "CommonProgramW6432"] {
+            shared.extend(get(v));
+        }
+        for v in ["ProgramFiles", "ProgramFiles(x86)", "ProgramW6432"] {
+            if let Some(p) = get(v) {
+                shared.extend(["Common Files", "WindowsApps", "Microsoft", "Windows NT", "Windows Defender", "Internet Explorer"].iter().map(|x| p.join(x)));
+            }
+        }
+        if let Some(d) = get("ProgramData") {
+            shared.extend(["Microsoft", "Package Cache"].iter().map(|x| d.join(x)));
+        }
         if let Some(l) = get("LOCALAPPDATA") {
+            shared.extend(["Microsoft", "Packages", "Package Cache"].iter().map(|x| l.join(x)));
             shared.push(l.join("Programs"));
             shared.push(l.join("Programs").join(crate::paths::SUITE_DIR));
         }
@@ -354,7 +367,7 @@ legacy_names = ["OmniConverter"]
             })
             .map(String::from)
         });
-        for bad in [r"C:\", r"C:\Windows\System32", r"C:\Program Files", r"C:\Users\you", r"C:\Users", r"C:\Users\you\AppData\Local\Programs", r"C:\Users\you\Desktop", r"relative\dir"] {
+        for bad in [r"C:\", r"C:\Windows\System32", r"C:\Program Files", r"C:\Users\you", r"C:\Users", r"C:\Users\you\AppData\Local\Programs", r"C:\Users\you\Desktop", r"C:\Program Files\Common Files", r"C:\Program Files\WindowsApps", r"C:\Users\you\AppData\Local\Microsoft", r"relative\dir"] {
             assert!(!g.is_app_folder(Path::new(bad)), "{bad}");
         }
         for ok in [r"C:\Program Files\Omni Convert", r"C:\Users\you\AppData\Local\Omni Convert", r"D:\Apps\Omni"] {

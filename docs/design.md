@@ -247,6 +247,13 @@ and runs `UninstallString` via `cmd /C`, which handles the quoted path.
   `MoveFileExW(…, MOVEFILE_DELAY_UNTIL_REBOOT)` writes `PendingFileRenameOperations` under HKLM and needs admin, so it
   fails for a per-user installer. If the `del` ever misses, the leftover is one small file in `%TEMP%`.) Progress and the result are shown by the temp copy, so the user sees
   one continuous window.
+- `uninstall.exe /S` hands off the same way but adds `--report` and waits (up to 10 minutes) for the temp copy to
+  signal its result through a named event (`Local\GloriaSetup-<id>-<pid>-result-<code>`), so its exit code is the real
+  outcome and the registry key and tracked files are already gone when it returns. Files it could not remove while
+  `uninstall.exe` itself was still running are retried once the parent exits. After an interrupted update (a
+  `.gloria` folder is present) it returns at once instead, because the temp copy first has to roll that update back.
+- Only one setup or uninstall of an app runs its engine at a time (mutex `Local\GloriaSetup-<id>`; a second one waits
+  up to 120 s silent / 3 s with UI, then exits 3).
 
 ## 8. Existing installs
 
@@ -288,11 +295,19 @@ when its own checkbox is ticked, and `/S` leaves it unticked, but we don't rely 
 `data_folders` are validated at pack time and again at run time (same code in `gloria-core`):
 
 - Must start with `%APPDATA%\`, `%LOCALAPPDATA%\` or `%USERPROFILE%\` followed by at least one concrete component.
-- Rejected: `..`, `.`, empty components, wildcards, drive letters or `:` after the root, UNC, bare roots, and a
-  deny-list of shared folders (e.g. `%LOCALAPPDATA%\Programs`, `\Temp`, `\Microsoft`, `\Packages`, and under
-  `%USERPROFILE%`: `Documents`, `Desktop`, `Downloads`, `Pictures`, `Music`, `Videos`, `AppData`, `OneDrive`).
+- Rejected: `..`, `.`, empty components, wildcards, control characters, drive letters or `:` after the root, UNC,
+  bare roots, reserved device names (`CON`, `NUL`, `COM1`, `nul.txt`, …), 8.3 short names (`FOOBAR~1`), components
+  ending in `.` or a space, and a deny-list of shared folders, also when they are only part of the path (e.g.
+  `%LOCALAPPDATA%\Programs`, `\Temp`, `\Microsoft`, `\Packages`, and under `%USERPROFILE%`: `Documents`, `Desktop`,
+  `Downloads`, `Pictures`, `Music`, `Videos`, `AppData`, `OneDrive`, `.config`, `.ssh`, …), so
+  `%APPDATA%\Microsoft\Windows\Foo` is refused like `%APPDATA%\Microsoft`.
 - Must not overlap the install folder.
 - Deletion never follows junctions or symlinks (reparse points are unlinked, not traversed).
+
+The install folder gets the same character, device-name and short-name checks. When the chosen folder is itself a
+shared root (the user profile, Desktop, Documents, `%LOCALAPPDATA%\Programs`, …), `\<Name>` is appended instead of
+installing straight into it. Environment paths that come back in 8.3 form are expanded with `GetLongPathNameW` first,
+so the comparisons see the real names.
 
 Data is removed only when the user ticks "Also remove my settings and data" (unchecked by default, lists each folder
 with its size), or with `/PURGE` in silent mode. A normal update never asks and never deletes.
@@ -335,7 +350,7 @@ optional), so `/D=C:\My Apps\Foo` works. Flags are case-insensitive.
 | `/RELAUNCH` | start the app after a silent install/update |
 | `--preview`, `--page <name>`, `--lang <code>`, `--manifest <file>`, `--icon <file>`, `--screenshot <dir>` | preview |
 | `--dry-run` | log every action without doing it |
-| `--cleanup <dir> --wait-pid <pid>` | internal (uninstall trampoline) |
+| `--cleanup <dir> --wait-pid <pid> [--report]` | internal (uninstall trampoline; `--report` signals the result to a silent parent) |
 
 | Code | Meaning |
 |---|---|
@@ -347,7 +362,8 @@ optional), so `/D=C:\My Apps\Foo` works. Flags are case-insensitive.
 | 5 | WebView2 installation failed |
 | 6 | invalid arguments or non-writable install path |
 
-Every run writes a log to `%TEMP%\GloriaSetup-<id>-<timestamp>.log`; the error screen links to it.
+Every run writes a log to `%TEMP%\GloriaSetup-<id>-<timestamp>.log` (`-2`, `-3`, … appended when two runs start in
+the same second); the error screen links to it.
 
 ## 12. Languages
 

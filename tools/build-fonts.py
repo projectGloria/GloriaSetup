@@ -6,6 +6,7 @@ Usage: python tools/build-fonts.py
 """
 import io
 import pathlib
+import os
 import urllib.request
 
 from fontTools import subset
@@ -14,7 +15,9 @@ from fontTools.varLib import instancer
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "fonts"
-BASE = "https://raw.githubusercontent.com/google/fonts/main/ofl/"
+# google/fonts moves on; set GLORIA_FONTS_REF to a commit SHA to rebuild exactly the fonts a release shipped with.
+REF = os.environ.get("GLORIA_FONTS_REF", "main")
+BASE = f"https://raw.githubusercontent.com/google/fonts/{REF}/ofl/"
 
 FONTS = {
     # family dir, variable file, output prefix, weights, extra fixed axes

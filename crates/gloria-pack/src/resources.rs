@@ -200,10 +200,11 @@ pub fn icon_group(path: &Path) -> std::io::Result<Vec<(u16, Vec<u8>)>> {
     let Some((_, _, _, g)) = all.iter().find(|(t, n, _, _)| *t == RT_GROUP_ICON && *n == ResName::Id(1)) else {
         return Ok(vec![]);
     };
-    let count = u16::from_le_bytes([g[4], g[5]]) as usize;
+    let bad = || std::io::Error::new(std::io::ErrorKind::InvalidData, "truncated icon group");
+    let count = u16::from_le_bytes(g.get(4..6).ok_or_else(bad)?.try_into().map_err(|_| bad())?) as usize;
     let mut out = Vec::new();
     for i in 0..count {
-        let e = &g[6 + i * 14..6 + i * 14 + 14];
+        let e = g.get(6 + i * 14..6 + i * 14 + 14).ok_or_else(bad)?;
         let id = u16::from_le_bytes([e[12], e[13]]);
         if let Some((_, _, _, d)) = all.iter().find(|(t, n, _, _)| *t == RT_ICON && *n == ResName::Id(id)) {
             out.push((id, d.clone()));
