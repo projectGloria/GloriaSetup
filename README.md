@@ -109,7 +109,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Build your app into app-dist\
-      - uses: projectGloria/GloriaSetup@v0.3.0
+      - uses: projectGloria/GloriaSetup@v0.3.1
         with:
           app-dir: app-dist
           manifest: gloria.toml
