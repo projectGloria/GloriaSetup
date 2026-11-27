@@ -43,7 +43,7 @@ permissions:
 
 env:
   # gloria-setup version released with this commit of GloriaSetup. GloriaSetup's release keeps it equal to Cargo.toml.
-  GLORIA_SETUP_PIN: '0.3.1'
+  GLORIA_SETUP_PIN: '0.4.0'
 
 jobs:
   check:

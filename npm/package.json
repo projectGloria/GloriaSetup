@@ -1,6 +1,6 @@
 {
   "name": "gloria-setup",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Per-user (no admin) Windows installer builder for projectGloria apps (gloria-pack + gloria-stub).",
   "license": "MIT",
   "author": "Project Gloria",
