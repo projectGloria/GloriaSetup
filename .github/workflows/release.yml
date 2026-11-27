@@ -43,6 +43,11 @@ jobs:
             echo "::error::npm/package.json version ($NPM_VERSION) does not match Cargo.toml ($VERSION)"
             exit 1
           fi
+          PIN="$(sed -n "s/^  GLORIA_SETUP_PIN: '\([^']*\)'/\1/p" .github/workflows/app-check.yml | head -n 1)"
+          if [[ "$PIN" != "$VERSION" ]]; then
+            echo "::error::.github/workflows/app-check.yml GLORIA_SETUP_PIN ($PIN) does not match Cargo.toml ($VERSION)"
+            exit 1
+          fi
           README_TAG="$(sed -n 's#.*projectGloria/GloriaSetup@\(v[^[:space:]]*\).*#\1#p' README.md | head -n 1)"
           if [[ "$README_TAG" != "v$VERSION" ]]; then
             echo "::error::README.md uses projectGloria/GloriaSetup@$README_TAG but the version is v$VERSION; update the README example"
@@ -197,3 +202,24 @@ jobs:
         shell: bash
         working-directory: npm
         run: npm publish --access public --tag next
+
+  # Apps call the shared workflows at @v<major> (templates/release.yml). Move that tag only now, after the tests,
+  # the GitHub Release and npm all succeeded, so apps never run an unreleased GloriaSetup.
+  move-major-tag:
+    needs: [version, publish-npm]
+    if: github.ref == 'refs/heads/main' && !inputs.dry_run && !contains(needs.version.outputs.version, '-')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Move v<major> to this release
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          MAJOR="v${VERSION%%.*}"
+          git tag -f "$MAJOR" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$MAJOR"
+          echo "$MAJOR -> $GITHUB_SHA (v$VERSION)"

@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn version_info_round_trip() {
         let strings = [
-            ("CompanyName", "projectGloria".to_string()),
+            ("CompanyName", "Project Gloria".to_string()),
             ("FileDescription", "Gloria Dummy Setup".to_string()),
             ("ProductName", "Gloria Dummy".to_string()),
             ("ProductVersion", "0.2.0".to_string()),

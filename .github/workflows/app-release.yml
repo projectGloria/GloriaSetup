@@ -1,14 +1,15 @@
 # Reusable: the last job of every projectGloria app release.
 # Takes the files the app's own build job uploaded and:
-#   - installer apps (gloria.toml): packs them with the gloria-setup version app-check picked (the newest on npm),
-#     bundles the WebView2 bootstrapper when needs_webview2 = true, and dry-runs the setup
+#   - installer apps (gloria.toml): checks that main_exe's FileDescription and ProductName are the app name, packs
+#     with the gloria-setup version app-check picked, bundles the WebView2 bootstrapper when needs_webview2 = true,
+#     and dry-runs the setup
 #   - other apps (browser extensions, Android, ...): publishes the uploaded files as they are
 # then publishes GitHub Release v<version> with SHA256SUMS.txt (draft -> upload -> verify -> undraft).
 #
 # Usage (in the app's .github/workflows/release.yml):
 #   release:
 #     needs: [check, build]
-#     uses: projectGloria/GloriaSetup/.github/workflows/app-release.yml@main
+#     uses: projectGloria/GloriaSetup/.github/workflows/app-release.yml@v0
 #     permissions:
 #       contents: write
 #     with:
@@ -62,6 +63,28 @@ jobs:
         with:
           node-version: 22
 
+      - name: The app's exe is named like the app
+        shell: pwsh
+        run: |
+          # Task Manager, the taskbar, Volume Mixer and "Open with" show the exe's FileDescription, not gloria.toml.
+          $top = @{}
+          foreach ($line in Get-Content gloria.toml) {
+            if ($line -match '^\s*\[') { break }
+            if ($line -match '^\s*(name|main_exe)\s*=\s*"([^"]*)"') { $top[$Matches[1]] = $Matches[2] }
+          }
+          $exe = Join-Path stage $top['main_exe']
+          if (-not (Test-Path $exe)) { "::error::main_exe '$($top['main_exe'])' is not in the uploaded app folder (stage/)"; exit 1 }
+          $vi = (Get-Item $exe).VersionInfo
+          "FileDescription: '$($vi.FileDescription)'  ProductName: '$($vi.ProductName)'  expected: '$($top['name'])'"
+          $fail = $false
+          foreach ($k in 'FileDescription', 'ProductName') {
+            if ($vi.$k -cne $top['name']) {
+              "::error::$($top['main_exe']) has $k '$($vi.$k)' but it must be exactly '$($top['name'])' (the repository name). Set it in the app's version resource: Tauri productName in tauri.conf.json; winres/winresource FileDescription and ProductName in build.rs; FILEDESCRIPTION/PRODUCTNAME in the .rc file; <Product>/<AssemblyTitle> in the .csproj; Electron productName."
+              $fail = $true
+            }
+          }
+          if ($fail) { exit 1 }
+
       - name: Pack installer
         shell: pwsh
         env:
@@ -69,18 +92,31 @@ jobs:
           GLORIA_SETUP: ${{ inputs.gloria_setup }}
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not $env:GLORIA_SETUP) { $env:GLORIA_SETUP = (npm view gloria-setup version).Trim() }
+          function Invoke-Retry([string]$what, [scriptblock]$do) {
+            # Network steps (npm, the WebView2 download): retry with backoff so a hiccup does not fail the release.
+            foreach ($wait in 0, 5, 15, 30) {
+              if ($wait) { "$what failed; retrying in ${wait}s"; Start-Sleep $wait }
+              try { & $do; if ($LASTEXITCODE -eq 0 -or $null -eq $LASTEXITCODE) { return } } catch { "$what`: $_" }
+            }
+            throw "$what failed"
+          }
+          if (-not $env:GLORIA_SETUP) {
+            Invoke-Retry 'npm view' { $script:gs = (npm view gloria-setup version) }
+            $env:GLORIA_SETUP = "$gs".Trim()
+          }
+          $dir = Join-Path $env:RUNNER_TEMP 'gloria-setup'
+          Invoke-Retry "npm install gloria-setup@$env:GLORIA_SETUP" { npm install --no-save --no-audit --no-fund --prefix $dir "gloria-setup@$env:GLORIA_SETUP" }
           $packArgs = @('--app', 'stage', '--manifest', 'gloria.toml', '--version', $env:VERSION, '--out', 'dist')
           if (Select-String -Path gloria.toml -Pattern '^\s*needs_webview2\s*=\s*true' -Quiet) {
             # Bundled into the installer so nothing is downloaded at install time.
             New-Item -ItemType Directory -Force vendor | Out-Null
-            Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile vendor/MicrosoftEdgeWebview2Setup.exe
+            Invoke-Retry 'WebView2 bootstrapper download' { $global:LASTEXITCODE = 0; Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' -OutFile vendor/MicrosoftEdgeWebview2Setup.exe }
             $sig = Get-AuthenticodeSignature vendor/MicrosoftEdgeWebview2Setup.exe
             if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') { throw "WebView2 bootstrapper signature check failed: $($sig.Status)" }
             $packArgs += @('--webview2-bootstrapper', 'vendor/MicrosoftEdgeWebview2Setup.exe')
           }
           "Packing with gloria-setup $env:GLORIA_SETUP"
-          npx --yes "gloria-setup@$env:GLORIA_SETUP" @packArgs
+          node (Join-Path $dir 'node_modules/gloria-setup/cli.cjs') @packArgs
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify installer (silent dry run)

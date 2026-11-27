@@ -3,13 +3,16 @@
 # Runs only when started on purpose: /gloria-github-release, or `gh workflow run release.yml`.
 # Pushing to main never releases.
 #
-#   check   (shared)  version files agree, version not released yet, gloria.toml valid, picks newest gloria-setup
+#   check   (shared)  version files agree, version not released yet, gloria.toml id/name = repo name, no Tauri
+#                     NSIS/MSI bundle, gloria.toml valid; picks the gloria-setup version released with @v0
 #   build   (this repo) builds the app and uploads its files as the artifact `app`
-#   release (shared)  packs with that gloria-setup + dry run (or, without gloria.toml, publishes the files as-is),
+#   release (shared)  checks main_exe FileDescription/ProductName = name, packs with that gloria-setup + dry run
+#                     (or, without gloria.toml, publishes the files as-is),
 #                     then publishes GitHub Release v<version> with SHA256SUMS.txt
 #
-# The shared jobs live in projectGloria/GloriaSetup and are used from @main, so every release picks up
-# the newest checks and the newest gloria-setup without editing this file.
+# The shared jobs live in projectGloria/GloriaSetup and are used from @v0, a tag GloriaSetup's release moves
+# only after its own CI passed, so every release picks up the newest released checks and gloria-setup without
+# editing this file, and an unreleased change on GloriaSetup's main never breaks an app.
 name: Release
 
 on:
@@ -29,7 +32,11 @@ concurrency:
 
 jobs:
   check:
-    uses: projectGloria/GloriaSetup/.github/workflows/app-check.yml@main
+    uses: projectGloria/GloriaSetup/.github/workflows/app-check.yml@v0
+    # Extra files that carry the version (nested crates, .csproj), one per line:
+    # with:
+    #   version_files: |
+    #     crates/core/Cargo.toml
 
   build:
     needs: check
@@ -55,7 +62,7 @@ jobs:
 
   release:
     needs: [check, build]
-    uses: projectGloria/GloriaSetup/.github/workflows/app-release.yml@main
+    uses: projectGloria/GloriaSetup/.github/workflows/app-release.yml@v0
     permissions:
       contents: write
     with:

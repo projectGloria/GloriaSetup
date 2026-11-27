@@ -404,7 +404,7 @@ impl<'u, 'a> Ui<'u, 'a> {
         self.p.hline(1.0, W - 1.0, y, LINE);
         let by = y + 1.0 + (63.0 - 36.0) / 2.0;
         let mut x = CONTENT_X;
-        x += self.github_link(x, y + 32.0) + 18.0;
+        x += self.website_link(x, y + 32.0) + 18.0;
         for (label, kind, icon, act, en) in left {
             let w = self.button(x, by, label, *kind, *icon, *act, *en, false);
             x += w + 10.0;
@@ -420,17 +420,17 @@ impl<'u, 'a> Ui<'u, 'a> {
         }
     }
 
-    /// GloriaRed mark + "github.com/ProjectGloria", vertically centred on `cy`. On hover the mark lights up with a red
+    /// GloriaRed mark + "projectgloria.online", vertically centred on `cy`. On hover the mark lights up with a red
     /// glow and ring, the text brightens, a red underline sweeps in and an arrow slides out. Returns the width.
-    fn github_link(&mut self, x: f32, cy: f32) -> f32 {
-        let act = Act::OpenGithub;
+    fn website_link(&mut self, x: f32, cy: f32) -> f32 {
+        let act = Act::OpenWebsite;
         let k = self.inp.link.clamp(0.0, 1.0);
         let down = self.inp.hover == Some(act) && self.inp.pressed == Some(act);
         let cy = if down { cy + 1.0 } else { cy };
         let f = font(Family::Mono, 500, 10.0).track(0.02);
-        let (host, org) = ("github.com/", "ProjectGloria");
-        let hw = self.p.g.measure(f, host);
-        let ow = self.p.g.measure(f, org);
+        let (org, tld) = ("projectgloria", ".online");
+        let hw = self.p.g.measure(f, org);
+        let ow = self.p.g.measure(f, tld);
         let size = 20.0;
         let ir = rect(x, cy - size / 2.0, size, size);
         let tx = ir.r() + 9.0;
@@ -453,10 +453,10 @@ impl<'u, 'a> Ui<'u, 'a> {
             self.p.border(ir.inset(-2.0), GLORIA_RED_HI.alpha(0.55 * k));
         }
 
-        // Text: host dims, org brightens to white.
+        // Text: the name brightens to white, the domain suffix stays dim.
         let ty = cy - self.lh(f) / 2.0;
-        self.p.label(f, host, tx, ty, mix(FAINT, MUTED, k));
-        self.p.label(f, org, tx + hw, ty, mix(DIM, WHITE, k));
+        self.p.label(f, org, tx, ty, mix(DIM, WHITE, k));
+        self.p.label(f, tld, tx + hw, ty, mix(FAINT, MUTED, k));
 
         // Underline sweeping in from the left, with a glow.
         let uy = (cy + self.lh(f) / 2.0 + 1.0).round();

@@ -93,10 +93,10 @@ cargo test --workspace
 
 ### Release workflow for projectGloria apps (recommended)
 
-Copy [`templates/release.yml`](templates/release.yml) to `.github/workflows/release.yml` and replace only its `build` job. It runs only when started on purpose (`gh workflow run release.yml`); pushing to `main` never releases. Its two shared jobs come from this repo at `@main`:
+Copy [`templates/release.yml`](templates/release.yml) to `.github/workflows/release.yml` and replace only its `build` job. It runs only when started on purpose (`gh workflow run release.yml`); pushing to `main` never releases. Its two shared jobs come from this repo at `@v0`, a tag that GloriaSetup's release moves only after its own tests, GitHub Release and npm publish succeed:
 
-- [`app-check.yml`](.github/workflows/app-check.yml) runs first and takes about a minute. It checks that the version files agree and that the version isn't released yet, picks the newest `gloria-setup` on npm, and runs `gloria-pack --check` on `gloria.toml`.
-- [`app-release.yml`](.github/workflows/app-release.yml) packs the staged app with that same `gloria-setup`, bundling WebView2 when `needs_webview2 = true`, and dry-runs the setup. It then publishes `v<version>` with `SHA256SUMS.txt`. Repos without `gloria.toml`, such as extensions and Android apps, get their built files published as they are. A draft left by a failed run is reused; a published release is never overwritten.
+- [`app-check.yml`](.github/workflows/app-check.yml) runs first and takes about a minute. It checks that the version files agree (plus any `version_files` you list) and that the version isn't released yet, that `gloria.toml` `id` and `name` are exactly the repository name, and that a Tauri app has `bundle.active` off (GloriaSetup is the only installer). It picks the `gloria-setup` version released with that `@v0` and runs `gloria-pack --check` on `gloria.toml`.
+- [`app-release.yml`](.github/workflows/app-release.yml) checks that `main_exe`'s FileDescription and ProductName are exactly the app name, packs the staged app with that same `gloria-setup`, bundling WebView2 when `needs_webview2 = true`, and dry-runs the setup. It then publishes `v<version>` with `SHA256SUMS.txt`. Repos without `gloria.toml`, such as extensions and Android apps, get their built files published as they are. A draft left by a failed run is reused; a published release is never overwritten.
 
 ### In GitHub Actions (composite action)
 

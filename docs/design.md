@@ -44,7 +44,8 @@ app_user_model_id = "com.omniconvert.app"   # optional, written on shortcuts (Ta
 context_menu  = "Convert with OmniConvert"   # optional right-click label for folders, backgrounds, drives
 ```
 
-`publisher` is always `projectGloria` and is not configurable (GloriaLauncher contract).
+`publisher` is always `Project Gloria` and is not configurable. Registry keys keep the `projectGloria.` prefix
+(GloriaLauncher contract).
 
 ## 2. PE payload format (Authenticode-safe)
 
@@ -130,7 +131,7 @@ Corner style (Win11 rounded vs square) is chosen in the mockups.
   writes the new group 1 and its `RT_ICON` ids. A test asserts that no GloriaSetup icon image remains in the output.
 - Version info (`RT_VERSION`) is rewritten: `ProductName` = name, `FileDescription` = "`<Name>` Setup",
   `ProductVersion`/`FileVersion` = version (numeric `FIXEDFILEINFO` from the core of the SemVer), `CompanyName` =
-  "projectGloria".
+  "Project Gloria".
 - The stub loads its window icons and the large welcome icon **from its own resources**, so whatever `gloria-pack`
   wrote is what the window, taskbar and Explorer show. `--preview --icon <file>` overrides this for previews only.
 - No icon in the manifest → pack error. `--allow-default-icon` keeps the GloriaSetup icon (local testing only; the
@@ -222,7 +223,8 @@ colliding with Tauri-NSIS subkeys (which use the bare product name) during migra
 | `DisplayIcon` | SZ | `C:\…\omniconvert.exe`, bare full path |
 | `UninstallString` | SZ | `"C:\…\uninstall.exe"` |
 | `QuietUninstallString` | SZ | `"C:\…\uninstall.exe" /S` |
-| `Publisher` | SZ | `projectGloria` |
+| `Publisher` | SZ | `Project Gloria` |
+| `URLInfoAbout`, `HelpLink`, `URLUpdateInfo` | SZ | `https://projectgloria.online` |
 | `EstimatedSize` | DWORD | total installed bytes / 1024 (KB) |
 | `NoModify`, `NoRepair` | DWORD | 1 |
 | `GloriaSetup` | SZ | stub version (marks our own keys) |

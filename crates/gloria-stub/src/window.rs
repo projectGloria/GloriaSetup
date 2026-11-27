@@ -64,7 +64,7 @@ impl State {
     /// Retargets the link hover animation after the hovered control changed.
     fn hover_changed(&mut self) {
         let now = self.now();
-        let to = if self.inp.hover == Some(Act::OpenGithub) { 1.0 } else { 0.0 };
+        let to = if self.inp.hover == Some(Act::OpenWebsite) { 1.0 } else { 0.0 };
         if to != self.link.1 {
             self.link = (self.link_k(now), to, now);
             start_timer(self);

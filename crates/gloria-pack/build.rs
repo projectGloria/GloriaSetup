@@ -11,7 +11,7 @@ fn main() {
     let ver = env!("CARGO_PKG_VERSION");
     let v = gloria_core::version::Version::parse(ver).unwrap().file_version();
     let strings = [
-        ("CompanyName", "projectGloria".to_string()),
+        ("CompanyName", "Project Gloria".to_string()),
         ("FileDescription", "GloriaSetup packer".to_string()),
         ("FileVersion", ver.to_string()),
         ("OriginalFilename", "gloria-pack.exe".to_string()),

@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use crate::manifest::{AppManifest, PUBLISHER, UNINSTALLER_NAME};
+use crate::manifest::{AppManifest, PUBLISHER, UNINSTALLER_NAME, WEBSITE};
 
 pub const UNINSTALL_ROOT: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 
@@ -32,6 +32,9 @@ pub fn uninstall_values(
         ("DisplayName", RegValue::Sz(app.name.clone())),
         ("DisplayVersion", RegValue::Sz(app.parsed_version().to_string())),
         ("Publisher", RegValue::Sz(PUBLISHER.into())),
+        ("URLInfoAbout", RegValue::Sz(WEBSITE.into())),
+        ("HelpLink", RegValue::Sz(WEBSITE.into())),
+        ("URLUpdateInfo", RegValue::Sz(WEBSITE.into())),
         ("InstallLocation", RegValue::Sz(dir)),
         ("DisplayIcon", RegValue::Sz(exe)),
         ("UninstallString", RegValue::Sz(unins.clone())),
@@ -146,7 +149,10 @@ accent = "#3b82f6"
         assert_eq!(app().uninstall_key(), "projectGloria.GloriaDummy");
         assert_eq!(sz(&v, "DisplayName"), "GloriaDummy");
         assert_eq!(sz(&v, "DisplayVersion"), "0.2.0", "no leading v, full core");
-        assert_eq!(sz(&v, "Publisher"), "projectGloria");
+        assert_eq!(sz(&v, "Publisher"), "Project Gloria");
+        assert_eq!(sz(&v, "URLInfoAbout"), "https://projectgloria.online");
+        assert_eq!(sz(&v, "HelpLink"), "https://projectgloria.online");
+        assert_eq!(sz(&v, "URLUpdateInfo"), "https://projectgloria.online");
         assert_eq!(sz(&v, "InstallLocation"), r"C:\Users\you\AppData\Local\Programs\Gloria Dummy");
         assert_eq!(sz(&v, "DisplayIcon"), r"C:\Users\you\AppData\Local\Programs\Gloria Dummy\gloria-dummy.exe");
         assert_eq!(sz(&v, "UninstallString"), r#""C:\Users\you\AppData\Local\Programs\Gloria Dummy\uninstall.exe""#);

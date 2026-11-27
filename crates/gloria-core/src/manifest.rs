@@ -1,12 +1,17 @@
 //! App manifest: `gloria.toml` in the app repo (pack time) and the JSON copy inside the payload (run time).
-//! See docs/design.md §1. `publisher` is fixed to "projectGloria" and is not configurable.
+//! See docs/design.md §1. `publisher` is fixed to "Project Gloria" and is not configurable.
 
 use serde::{Deserialize, Serialize};
 
 use crate::paths::{parse_data_folder, DataFolder};
 use crate::version::Version;
 
-pub const PUBLISHER: &str = "projectGloria";
+/// Prefix of the Uninstall and shell-verb registry keys (`projectGloria.<id>`). GloriaLauncher contract: never change.
+pub const KEY_PREFIX: &str = "projectGloria";
+/// Display name of the publisher (registry `Publisher`, exe `CompanyName`).
+pub const PUBLISHER: &str = "Project Gloria";
+/// projectGloria website (registry `URLInfoAbout`/`HelpLink`/`URLUpdateInfo`, installer footer).
+pub const WEBSITE: &str = "https://projectgloria.online";
 /// File name of the installed uninstaller. GloriaLauncher skips exes whose name starts with "unins".
 pub const UNINSTALLER_NAME: &str = "uninstall.exe";
 pub const INSTALL_MANIFEST_NAME: &str = "install-manifest.json";
@@ -134,7 +139,7 @@ impl AppManifest {
 
     /// Registry subkey under `...\CurrentVersion\Uninstall`.
     pub fn uninstall_key(&self) -> String {
-        format!("{PUBLISHER}.{}", self.id)
+        format!("{KEY_PREFIX}.{}", self.id)
     }
 
     /// `main_exe` with Windows separators.

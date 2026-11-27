@@ -1,17 +1,29 @@
 # Reusable: the first job of every projectGloria app release.
 # Runs in about a minute, before the app's (long) build, and fails fast on:
-#   - version files that disagree (gloria.toml, package.json, tauri.conf.json, Cargo.toml)
+#   - version files that disagree (gloria.toml, package.json, tauri.conf.json, Cargo.toml, extra version_files)
 #   - a version that is already released (bump it first)
+#   - gloria.toml `id` or `name` that is not exactly the repository name
+#   - a Tauri app that still builds Tauri's own NSIS/MSI installer (`bundle.active = true`)
 #   - a gloria.toml that gloria-pack would reject (TOML syntax, fields, icon)
-# It also picks the newest gloria-setup on npm once, so the pack step uses exactly that version.
+# It also picks the gloria-setup version once, so the pack step uses exactly that version: the version released
+# together with this file (GLORIA_SETUP_PIN, moved by GloriaSetup's release), so callers at @v0 get a version whose
+# CI passed. Older callers at @main get the same pin.
 #
 # Usage (in the app's .github/workflows/release.yml):
 #   check:
-#     uses: projectGloria/GloriaSetup/.github/workflows/app-check.yml@main
+#     uses: projectGloria/GloriaSetup/.github/workflows/app-check.yml@v0
 name: App check
 
 on:
   workflow_call:
+    inputs:
+      version_files:
+        description: >-
+          Extra files that carry the version, one per line (e.g. crates/core/Cargo.toml, src/App/App.csproj).
+          .json reads "version", .toml reads [package] / [workspace.package] / top-level version, .csproj/.props
+          reads <Version>.
+        type: string
+        default: ''
     outputs:
       version:
         description: Version to release (no leading v)
@@ -23,11 +35,15 @@ on:
         description: "'true' when the repo has gloria.toml (pack a GloriaSetup installer), else 'false' (publish the build's files as-is)"
         value: ${{ jobs.check.outputs.installer }}
       gloria_setup:
-        description: Newest gloria-setup version on npm at check time (empty when installer is false)
+        description: gloria-setup version to pack with (empty when installer is false)
         value: ${{ jobs.check.outputs.gloria_setup }}
 
 permissions:
   contents: read
+
+env:
+  # gloria-setup version released with this commit of GloriaSetup. GloriaSetup's release keeps it equal to Cargo.toml.
+  GLORIA_SETUP_PIN: '0.3.1'
 
 jobs:
   check:
@@ -43,6 +59,8 @@ jobs:
       - name: Read and cross-check version files
         id: version
         shell: pwsh
+        env:
+          VERSION_FILES: ${{ inputs.version_files }}
         run: |
           $ErrorActionPreference = 'Stop'
           $found = [ordered]@{}
@@ -56,13 +74,34 @@ jobs:
             }
             return $null
           }
+          function Get-JsonVersion([string]$path) {
+            $j = Get-Content $path -Raw | ConvertFrom-Json
+            $v = $j.version
+            # Tauri v1 keeps it in package.version.
+            if (-not $v -and $j.package) { $v = $j.package.version }
+            # Tauri may point at another file ("../package.json"); that file is checked on its own.
+            if ($v -and $v -match '\.json$') { return $null }
+            return $v
+          }
+          function Get-AnyVersion([string]$path) {
+            switch -regex ($path) {
+              '\.json$' { return Get-JsonVersion $path }
+              '\.toml$' {
+                foreach ($t in 'package', 'workspace.package', '') { $v = Get-TomlVersion $path $t; if ($v) { return $v } }
+                return $null
+              }
+              '\.(csproj|props|fsproj|vbproj)$' {
+                $m = Select-String -Path $path -Pattern '<Version>\s*([^<\s]+)\s*</Version>' | Select-Object -First 1
+                if ($m) { return $m.Matches[0].Groups[1].Value }
+                return $null
+              }
+              default { throw "version_files: don't know how to read $path (use .json, .toml, .csproj or .props)" }
+            }
+          }
 
           if (Test-Path gloria.toml) { $found['gloria.toml'] = Get-TomlVersion gloria.toml '' }
-          foreach ($f in 'package.json', 'src-tauri/tauri.conf.json') {
-            if (Test-Path $f) {
-              $v = (Get-Content $f -Raw | ConvertFrom-Json).version
-              if ($v) { $found[$f] = $v }
-            }
+          foreach ($f in 'package.json', 'src-tauri/tauri.conf.json', 'tauri.conf.json') {
+            if (Test-Path $f) { $v = Get-JsonVersion $f; if ($v) { $found[$f] = $v } }
           }
           foreach ($f in 'Cargo.toml', 'src-tauri/Cargo.toml') {
             if (Test-Path $f) {
@@ -70,6 +109,12 @@ jobs:
               if (-not $v) { $v = Get-TomlVersion $f 'workspace.package' }
               if ($v) { $found[$f] = $v }
             }
+          }
+          foreach ($f in ($env:VERSION_FILES -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            if (-not (Test-Path $f)) { "::error::version_files: $f does not exist"; exit 1 }
+            $v = Get-AnyVersion $f
+            if (-not $v) { "::error::version_files: no version found in $f"; exit 1 }
+            $found[$f] = $v
           }
           if ($found.Count -eq 0) { throw 'No version found: add gloria.toml (desktop apps) or a version in package.json.' }
 
@@ -101,21 +146,80 @@ jobs:
           "$env:TAG is not released yet."
           exit 0
 
+      - name: App name is the repository name
+        if: steps.version.outputs.installer == 'true'
+        shell: pwsh
+        run: |
+          # The Start Menu shortcut, Apps & features, GloriaLauncher and the exe all show `name`: it must be the repo name.
+          $repo = $env:GITHUB_REPOSITORY.Split('/')[1]
+          $top = @{}
+          foreach ($line in Get-Content gloria.toml) {
+            if ($line -match '^\s*\[') { break }
+            if ($line -match '^\s*(id|name)\s*=\s*"([^"]*)"') { $top[$Matches[1]] = $Matches[2] }
+          }
+          $fail = $false
+          foreach ($k in 'id', 'name') {
+            if ($top[$k] -cne $repo) {
+              "::error file=gloria.toml::gloria.toml $k is '$($top[$k])' but must be exactly the repository name '$repo' (same letters and case). Set $k = `"$repo`"."
+              $fail = $true
+            }
+          }
+          if ($fail) { exit 1 }
+          "gloria.toml id and name = $repo"
+
+      - name: GloriaSetup is the only installer
+        shell: pwsh
+        run: |
+          # Tauri's bundler builds an NSIS/MSI installer next to the exe; projectGloria apps ship only GloriaSetup.
+          $fail = $false
+          $confs = Get-ChildItem -Recurse -Depth 3 -File -Filter tauri.conf.json |
+            Where-Object { $_.FullName -notmatch '[\\/](node_modules|target|dist)[\\/]' } |
+            ForEach-Object { Resolve-Path -Relative $_.FullName }
+          foreach ($f in $confs) {
+            $j = Get-Content $f -Raw | ConvertFrom-Json
+            $b = if ($j.bundle) { $j.bundle } elseif ($j.tauri -and $j.tauri.bundle) { $j.tauri.bundle } else { $null }
+            if ($b -and $b.active -eq $true) {
+              "::error file=$f::$f has bundle.active = true, so Tauri also builds its own NSIS/MSI installer. Set `"bundle`": { `"active`": false } - GloriaSetup is the installer."
+              $fail = $true
+            } else { "$f bundle.active is off" }
+          }
+          if ($fail) { exit 1 }
+
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         if: steps.version.outputs.installer == 'true'
         with:
           node-version: 22
 
-      - name: Pick the newest gloria-setup and validate gloria.toml
+      - name: Pick gloria-setup and validate gloria.toml
         id: gloria
         if: steps.version.outputs.installer == 'true'
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
-          $gs = (npm view gloria-setup version).Trim()
-          if ($LASTEXITCODE -ne 0 -or -not $gs) { throw 'npm view gloria-setup version failed' }
+          $ErrorActionPreference = 'Stop'
+          function Invoke-Npm([string[]]$a) {
+            # npm hits the network; retry with backoff so a registry hiccup does not fail the release.
+            foreach ($wait in 0, 5, 15, 30) {
+              if ($wait) { "npm $($a -join ' ') failed; retrying in ${wait}s"; Start-Sleep $wait }
+              $out = & npm @a 2>&1
+              if ($LASTEXITCODE -eq 0) { return $out }
+            }
+            $out | Write-Host
+            throw "npm $($a -join ' ') failed"
+          }
+
+          $gs = $env:GLORIA_SETUP_PIN
+          $have = (Invoke-Npm @('view', "gloria-setup@$gs", 'version')) | Out-String
+          if (-not $have.Trim()) {
+            # Only between a GloriaSetup version bump and its release: the pin is not on npm yet.
+            $gs = ((Invoke-Npm @('view', 'gloria-setup', 'version')) | Out-String).Trim()
+            "::warning::gloria-setup $env:GLORIA_SETUP_PIN is not on npm yet; using $gs"
+          }
           "Using gloria-setup $gs"
           "gloria_setup=$gs" >> $env:GITHUB_OUTPUT
-          npx --yes "gloria-setup@$gs" --check --manifest gloria.toml --version $env:VERSION
+
+          $dir = Join-Path $env:RUNNER_TEMP 'gloria-setup'
+          Invoke-Npm @('install', '--no-save', '--no-audit', '--no-fund', '--prefix', $dir, "gloria-setup@$gs") | Out-Null
+          node (Join-Path $dir 'node_modules/gloria-setup/cli.cjs') --check --manifest gloria.toml --version $env:VERSION
           if ($LASTEXITCODE -ne 0) { "::error::gloria.toml is invalid (see above). Fix it locally with: npx gloria-setup --check"; exit 1 }

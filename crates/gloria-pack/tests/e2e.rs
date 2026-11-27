@@ -46,6 +46,7 @@ struct TestApp {
 
 impl TestApp {
     fn new(tag: &str) -> TestApp {
+        sweep_stale_shortcuts();
         let n = std::process::id();
         let id = format!("GloriaE2E{tag}{n}");
         let lad = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap());
@@ -67,7 +68,7 @@ impl TestApp {
     }
 
     fn lnk(&self) -> PathBuf {
-        PathBuf::from(std::env::var("APPDATA").unwrap()).join(r"Microsoft\Windows\Start Menu\Programs").join(format!("{}.lnk", self.name))
+        start_menu().join(format!("{}.lnk", self.name))
     }
 
     /// Packs version `v` (0.1.0 carries an extra file that later versions drop) with `ico`.
@@ -191,15 +192,47 @@ impl Drop for Running {
     }
 }
 
+fn start_menu() -> PathBuf {
+    PathBuf::from(std::env::var("APPDATA").unwrap()).join(r"Microsoft\Windows\Start Menu\Programs")
+}
+
+/// Removes `GloriaSetup E2E <tag> <pid>.lnk` shortcuts left by earlier runs that were killed before `Drop` ran
+/// (Ctrl+C, a timeout). A shortcut is stale when its test folder `GloriaSetupTests\GloriaE2E<tag><pid>` is gone.
+fn sweep_stale_shortcuts() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let tests = PathBuf::from(std::env::var("LOCALAPPDATA").unwrap()).join("GloriaSetupTests");
+        for e in std::fs::read_dir(start_menu()).into_iter().flatten().flatten() {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let Some(rest) = n.strip_prefix("GloriaSetup E2E ").and_then(|r| r.strip_suffix(".lnk")) else { continue };
+            let Some((tag, pid)) = rest.rsplit_once(' ') else { continue };
+            if pid.parse::<u32>().is_err() || tests.join(format!("GloriaE2E{tag}{pid}")).exists() {
+                continue;
+            }
+            let _ = std::fs::remove_file(e.path());
+        }
+    });
+}
+
+/// Deletes `p`, retrying briefly: Explorer can hold a fresh shortcut open for a moment after it is created.
+fn remove_retry(p: &Path) {
+    for _ in 0..10 {
+        if std::fs::remove_file(p).is_ok() || !p.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 impl Drop for TestApp {
     fn drop(&mut self) {
         let _ = Command::new("reg").args(["delete", &self.key(), "/f"]).output();
         if let Ok(m) = InstallManifest::load(&self.install) {
             for s in m.shortcuts {
-                let _ = std::fs::remove_file(s);
+                remove_retry(Path::new(&s));
             }
         }
-        let _ = std::fs::remove_file(self.lnk());
+        remove_retry(&self.lnk());
         let _ = std::fs::remove_dir_all(&self.data);
         let _ = std::fs::remove_dir_all(&self.work);
         for e in std::fs::read_dir(std::env::temp_dir()).into_iter().flatten().flatten() {
@@ -281,7 +314,7 @@ fn each_setup_gets_its_own_icon_and_version_and_no_gloria_icons() {
         assert!(i.icons.iter().all(|g| !ours.contains(&g.data)), "{v}: a GloriaSetup RT_ICON is left");
         assert_eq!(i.string("ProductVersion"), Some(v));
         assert_eq!(i.string("ProductName"), Some(t.name.as_str()));
-        assert_eq!(i.string("CompanyName"), Some("projectGloria"));
+        assert_eq!(i.string("CompanyName"), Some("Project Gloria"));
         assert_eq!(&i.version.as_ref().unwrap().0[..3], &v.split('.').map(|x| x.parse().unwrap()).collect::<Vec<u16>>()[..]);
         // The uninstaller inside the archive is patched the same way and carries no archive of its own.
         let p = i.payload.unwrap();
@@ -365,7 +398,7 @@ fn install_update_reinstall_downgrade_uninstall() {
     assert_eq!(files(&t.install), ["docs\\readme.txt", "dummy.exe", "install-manifest.json", "old-notes.txt", "uninstall.exe", "version.txt"]);
     assert_eq!(t.reg("DisplayName").as_deref(), Some(t.name.as_str()));
     assert_eq!(t.reg("DisplayVersion").as_deref(), Some("0.1.0"));
-    assert_eq!(t.reg("Publisher").as_deref(), Some("projectGloria"));
+    assert_eq!(t.reg("Publisher").as_deref(), Some("Project Gloria"));
     assert_eq!(t.reg("InstallLocation").as_deref(), Some(d.as_str()));
     assert_eq!(t.reg("DisplayIcon"), Some(format!(r"{d}\dummy.exe")));
     assert_eq!(t.reg("UninstallString"), Some(format!(r#""{d}\uninstall.exe""#)));

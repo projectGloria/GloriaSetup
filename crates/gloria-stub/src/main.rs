@@ -186,7 +186,7 @@ pub(crate) fn credit(g: &Gfx) -> Option<Image> {
 
 const GLORIA_RED_ICO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/gloria_red.ico"));
 
-/// The projectGloria mark shown next to the GitHub link in every footer.
+/// The projectGloria mark shown next to the website link in every footer.
 pub(crate) fn gloria_red(g: &Gfx) -> Option<Image> {
     Image::decode(&g.wic, GLORIA_RED_ICO).ok()
 }

@@ -59,7 +59,7 @@ pub fn all(dir: &Path, scale: f32, mut make: impl FnMut(&str) -> App) -> Result<
             app.preview_page(if hover { "welcome" } else { id });
             let mut inp = Input::default();
             if hover {
-                inp.hover = Some(Act::OpenGithub);
+                inp.hover = Some(Act::OpenWebsite);
                 inp.link = 1.0;
             }
             app.page_t0 = -10.0;

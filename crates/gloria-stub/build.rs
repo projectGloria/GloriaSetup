@@ -38,7 +38,7 @@ fn main() {
     let ver = env!("CARGO_PKG_VERSION");
     let v = gloria_core::version::Version::parse(ver).unwrap().file_version();
     let strings = [
-        ("CompanyName", "projectGloria".to_string()),
+        ("CompanyName", "Project Gloria".to_string()),
         ("FileDescription", "GloriaSetup".to_string()),
         ("FileVersion", ver.to_string()),
         ("InternalName", "gloria-stub".to_string()),
@@ -63,7 +63,7 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
     std::fs::write(out_dir.join("credit.ico"), res::build_ico(std::slice::from_ref(credit))).unwrap();
 
-    // The projectGloria mark next to the GitHub link in every footer. Embedded data too, never an icon resource.
+    // The projectGloria mark next to the website link in every footer. Embedded data too, never an icon resource.
     let red_path = root.join("assets/brand/GloriaRed.ico");
     println!("cargo:rerun-if-changed={}", red_path.display());
     let red = res::parse_ico(&std::fs::read(&red_path).expect("assets/brand/GloriaRed.ico")).expect("valid GloriaRed.ico");

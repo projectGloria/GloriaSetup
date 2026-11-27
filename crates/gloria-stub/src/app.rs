@@ -186,13 +186,13 @@ pub enum Act {
     Close,
     LaunchApp,
     OpenLog,
-    /// The projectGloria GitHub link in the footer.
-    OpenGithub,
+    /// The projectGloria website link in the footer.
+    OpenWebsite,
     Noop,
 }
 
 /// Where the footer link goes.
-pub const GITHUB_URL: &str = "https://github.com/ProjectGloria";
+pub const WEBSITE_URL: &str = gloria_core::manifest::WEBSITE;
 
 /// What the window must do after an action.
 #[derive(Clone, Debug, PartialEq)]
@@ -493,7 +493,7 @@ impl App {
                 return Effect::LaunchAndExit;
             }
             Act::OpenLog => return Effect::OpenLog,
-            Act::OpenGithub => return Effect::OpenUrl(GITHUB_URL),
+            Act::OpenWebsite => return Effect::OpenUrl(WEBSITE_URL),
         }
         Effect::None
     }
